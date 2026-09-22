@@ -12,7 +12,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/main.js",
     "smoke": "node scripts/smoke.mjs",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "verify": "npm run typecheck && npm run build && npm run smoke && npm run e2e"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
