@@ -385,6 +385,7 @@ function conversationKey(e: InboundEvent): string {
 - **`trace_id` 必须透传**：OpenAPI 响应 body 有 `trace_id`，响应头有 `X-Tps-trace-ID`。核心记录到日志并按事件维度归因，插件里的报错能追回原始事件。
 - 日志分级 + stdout/stderr 分离：内核自身日志走 stderr；插件日志带 `plugin=<name>` 前缀。
 - AppSecret、access_token **永不进日志**（config 层做一次性脱敏封装）。
+- **进程生命周期要有兜底**：`uncaughtException` / `unhandledRejection` 走关停而不是带崩退出；关停本身带看门狗（20s），到点强制退出。插件是子进程，内核消失不会带走它们 —— 唯一的可靠性来自「退出前一定回收」和「卡住时一定放弃」。启动后期失败（如换取 Gateway 接入点返回 500）同样必须先 `stopAll()` 再退出，否则留下一批没有父进程、也没人会去杀的孤儿。
 - **所有对外请求都必须带超时**（token / Gateway 接入点 / OpenAPI）。没有超时的 `fetch` 在网络卡住时会静默挂死整个启动流程 —— 没有日志、没有错误、没有任何可观测信号，比直接失败更难排查。
 
 ---

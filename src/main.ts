@@ -214,6 +214,9 @@ async function main(): Promise<void> {
     },
   });
 
+  // 从这里开始子进程已经存在，任何后续失败都必须先把它们收干净。
+  activeSupervisor = supervisor;
+
   await supervisor.startAll();
 
   const quarantined = supervisor.quarantined;
@@ -246,13 +249,31 @@ async function main(): Promise<void> {
   let gateway: Gateway;
   let closing = false;
 
+  /**
+   * 关停看门狗。
+   *
+   * 关停本身不能变成新的悬挂点：dispatcher.drain() 等的是在途事件，而单事件上限是
+   * 4.5 分钟。如果 drain() 或 stopAll() 卡住，进程会一直挂在这里，上层只能 SIGKILL ——
+   * 那时插件子进程反而会被留下当孤儿远期。所以到点强制退出：宁可放弃在途事件，
+   * 也不留下一个谁也杀不掉的进程。
+   */
+  const SHUTDOWN_WATCHDOG_MS = 20_000;
+
   const shutdown = async (code: number): Promise<void> => {
     if (closing) return;
     closing = true;
     log('info', '正在关停…');
+
+    const watchdog = setTimeout(() => {
+      log('error', `关停超过 ${SHUTDOWN_WATCHDOG_MS / 1000} 秒仍未完成，强制退出`);
+      process.exit(code === 0 ? 1 : code);
+    }, SHUTDOWN_WATCHDOG_MS);
+    if (typeof watchdog.unref === 'function') watchdog.unref();
+
     gateway.stop();
     await dispatcher.drain();
     await supervisor.stopAll();
+    clearTimeout(watchdog);
     log('info', '已关停');
     process.exit(code);
   };
@@ -283,6 +304,16 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown(0));
   process.on('SIGTERM', () => void shutdown(0));
+  // 未捕获异常与未处理的 reject 也必须走关停，而不是让进程带崩退出。插件是子进程，
+  // 内核消失并不会带走它们；而且带崩退出会让日志断在半截，事后完全看不出发生了什么。
+  process.on('uncaughtException', (error) => {
+    log('error', `未捕获异常：${describe(error)}`);
+    void shutdown(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    log('error', `未处理的 Promise 拒绝：${describe(reason)}`);
+    void shutdown(1);
+  });
   // Windows 无法向子进程投递 SIGTERM（child.kill 会退化成强杀），所以上层宿主
   // 想走真实关停路径时，用 spawn 时的 IPC 通道发 {type:'shutdown'}。这个监听
   // 只有在带 IPC 通道启动时才会被触发，不影响普通前台运行。
@@ -300,12 +331,30 @@ async function main(): Promise<void> {
   log('info', '已连接 Gateway，等待 Hello → Identify → READY');
 }
 
+/**
+ * 已创建的 Supervisor（模块级）。
+ *
+ * 启动后期的失败走不到 shutdown()：main() 直接 reject，由下面的 catch 兜底。
+ * 那时插件子进程可能已经起来了，不回收就会变成孤儿进程 —— 父进程没了，而它们的
+ * stdin 仍然是开着的，插件自己不会退出（echo 之外的自定义插件未必监听 stdin end）。
+ */
+let activeSupervisor: Supervisor | null = null;
+
 function describe(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
-main().catch((error: unknown) => {
+main().catch(async (error: unknown) => {
   const message = error instanceof ConfigError ? error.message : describe(error);
   process.stderr.write(`[fatal] ${message}\n`);
+
+  if (activeSupervisor !== null) {
+    try {
+      await activeSupervisor.stopAll();
+      process.stderr.write('[fatal] 已回收插件进程\n');
+    } catch (stopError) {
+      process.stderr.write(`[fatal] 回收插件失败：${describe(stopError)}\n`);
+    }
+  }
   process.exit(1);
 });

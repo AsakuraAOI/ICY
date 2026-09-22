@@ -70,6 +70,7 @@ async function main() {
   // 场景二/三会在中途创建，放在 try 之外声明，保证 finally 一定能收回它们的监听端口。
   let fatalMock = null;
   let resumeMock = null;
+  let gatewayFailMock = null;
 
   try {
     if (!(await waitFor('内核读到 token 并拿到 Gateway 接入点', () => mock.state.tokenCalls >= 1 && mock.state.gatewayCalls >= 1))) {
@@ -301,6 +302,46 @@ async function main() {
       }
     });
     check('恢复后仍能干净关停', resumeExit === 0, `exit=${String(resumeExit)}`);
+
+    // -------------- 场景四：启动后期失败（换取接入点 500）必须回收插件子进程
+    // 插件在 main() 的更早阶段就已经拉起。这条路径若直接 throw 出去，那些子进程
+    // 会变成孤儿 —— 父进程没了，而它们的 stdin 还开着，自己不会退出。
+    gatewayFailMock = await startMockQq({ gatewayFails: true });
+    const failLogs = [];
+    const failChild = spawn(process.execPath, [resolve(root, 'dist/main.js')], {
+      cwd: root,
+      env: {
+        ...process.env,
+        QQ_APP_ID: 'mock-app-id',
+        QQ_APP_SECRET: 'mock-app-secret',
+        QQ_API_BASE: gatewayFailMock.baseUrl,
+        PLUGIN_DIR: resolve(root, 'plugins'),
+        LOG_LEVEL: 'debug',
+      },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      windowsHide: true,
+    });
+    failChild.stdout.on('data', (chunk) => failLogs.push(String(chunk)));
+    failChild.stderr.on('data', (chunk) => failLogs.push(String(chunk)));
+
+    const failExit = await new Promise((done) => {
+      const timer = setTimeout(() => {
+        failChild.kill('SIGKILL');
+        done(null);
+      }, 20000);
+      failChild.once('exit', (code) => {
+        clearTimeout(timer);
+        done(code);
+      });
+    });
+    const failText = failLogs.join('');
+    check('接入点获取失败时内核退出（code 1）', failExit === 1, `exit=${String(failExit)}`);
+    check('失败原因写在日志里', failText.includes('获取 Gateway 接入点失败'), '');
+    check(
+      '接入点失败仍回收插件进程',
+      failText.includes('已回收插件进程'),
+      '不回收会留下没有父进程、也没人会去杀的插件子进程',
+    );
   } catch (error) {
     console.log(`FAIL ${error instanceof Error ? error.message : String(error)}`);
     failures += 1;
@@ -309,6 +350,7 @@ async function main() {
     mock.close();
     if (fatalMock !== null) fatalMock.close();
     if (resumeMock !== null) resumeMock.close();
+    if (gatewayFailMock !== null) gatewayFailMock.close();
   }
 
   if (failures > 0) {

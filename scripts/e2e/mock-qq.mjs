@@ -128,6 +128,10 @@ export function startMockQq(options = {}) {
       }
       if (path === '/gateway' && req.method === 'GET') {
         state.gatewayCalls += 1;
+        if (options.gatewayFails === true) {
+          json(res, 500, { err_code: 500, message: 'mock 接入点不可用' });
+          return;
+        }
         json(res, 200, { url: `ws://127.0.0.1:${port}/websocket/` });
         return;
       }
