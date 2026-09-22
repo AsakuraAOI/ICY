@@ -112,6 +112,36 @@ export function isBotMuted(error: ApiError): boolean {
   return error.errCode === 40054002;
 }
 
+/**
+ * 发送失败对插件可见的稳定原因。
+ *
+ * 插件不该自己解析 err_code —— 那是平台私有字段，取值和文案都可能变。但插件确实需要
+ * 区分「被动窗口过期了，重试也没用」和「网络抖了一下，值得退避重试」，所以内核把常见的
+ * 几种失败翻译成固定枚举。
+ */
+export type SendFailureReason =
+  | 'window_expired'
+  | 'duplicate_msg_seq'
+  | 'not_group_member'
+  | 'muted'
+  | 'auth_failed'
+  | 'network'
+  | 'unknown';
+
+/** 把发送路径的失败翻译成稳定 reason。 */
+export function describeSendFailure(error: unknown): SendFailureReason {
+  if (error instanceof ApiError) {
+    if (isPassiveWindowExpired(error)) return 'window_expired';
+    if (isDuplicateMessage(error)) return 'duplicate_msg_seq';
+    if (isNotGroupMember(error)) return 'not_group_member';
+    if (isBotMuted(error)) return 'muted';
+    if (isAuthFailure(error)) return 'auth_failed';
+    return 'unknown';
+  }
+  if (error instanceof TransportError) return 'network';
+  return 'unknown';
+}
+
 /** 网络层失败：fetch 抛错、超时、响应不是合法 JSON。 */
 export class TransportError extends Error {
   constructor(message: string, options?: ErrorOptions) {

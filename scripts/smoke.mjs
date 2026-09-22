@@ -20,6 +20,7 @@ import { closeAction } from '../dist/core/events.js';
 import { conversationKey, normalize, parseSceneExt } from '../dist/core/normalize.js';
 import { ReplyRegistry } from '../dist/core/pending.js';
 import { getApiBase, setApiBase } from '../dist/core/routes.js';
+import { ApiError, describeSendFailure } from '../dist/core/errors.js';
 import { SendThrottle } from '../dist/core/throttle.js';
 import { TokenManager } from '../dist/core/token.js';
 import { aggregateIntents } from '../dist/host/manifest.js';
@@ -321,6 +322,41 @@ try {
     'token 请求超时后抛错，而不是永久挂死',
     hangError !== null && hangElapsed < 5000,
     `elapsed=${hangElapsed}ms error=${hangError === null ? 'null' : hangError.name}`,
+  );
+
+  // ------------------------------------------- 发送失败 → 插件可见的稳定 reason
+  // 插件不该解析 err_code（平台私有字段），但必须能区分「重试无用」与「值得退避重试」。
+  const apiError = (errCode, httpStatus = 200) =>
+    new ApiError({
+      httpStatus,
+      path: '/v2/groups/g/messages',
+      errCode,
+      traceId: 'trace-x',
+      body: {},
+      detail: 'mock',
+    });
+  check(
+    '被动窗口过期被翻译成 window_expired',
+    describeSendFailure(apiError(40034005)) === 'window_expired' &&
+      describeSendFailure(apiError(40034128)) === 'window_expired' &&
+      describeSendFailure(apiError(304103)) === 'window_expired',
+  );
+  check(
+    'msg_seq 重复与权限类失败各有稳定 reason',
+    describeSendFailure(apiError(40054005)) === 'duplicate_msg_seq' &&
+      describeSendFailure(apiError(40054003)) === 'not_group_member' &&
+      describeSendFailure(apiError(40054002)) === 'muted' &&
+      describeSendFailure(apiError(11241)) === 'auth_failed',
+  );
+  check(
+    '未知 err_code 与非 API 错误都不会误判',
+    describeSendFailure(apiError(999999)) === 'unknown' &&
+      describeSendFailure(new Error('boom')) === 'unknown',
+  );
+  check(
+    'ApiError 的 message 带上 trace_id（追回平台侧的唯一依据）',
+    apiError(40034005).message.includes('trace_id=trace-x'),
+    apiError(40034005).message,
   );
 
   // ---------------------------------------------------------- 主动消息频控

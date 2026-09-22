@@ -16,7 +16,7 @@ import { ConfigError, loadConfig } from './config.js';
 import { QQApiClient } from './core/api.js';
 import { Deduper, dedupeKey } from './core/dedupe.js';
 import { Dispatcher, type LogLevel } from './core/dispatch.js';
-import { FatalError } from './core/errors.js';
+import { FatalError, describeSendFailure } from './core/errors.js';
 import { Gateway } from './core/gateway.js';
 import { normalize } from './core/normalize.js';
 import { ReplyRegistry, type ReplyInstruction } from './core/pending.js';
@@ -173,7 +173,10 @@ async function main(): Promise<void> {
         );
         return { ok: true, messageId: sent.messageId, msgSeq: instruction.msgSeq };
       } catch (error) {
-        return { ok: false, reason: 'send_failed', detail: describe(error) };
+        // reason 是稳定枚举，插件据此决定「重试」还是「放弃」；detail 只给人看。
+        const reason = describeSendFailure(error);
+        log('warn', `插件 ${pluginName} 的异步回复发送失败：${reason} — ${describe(error)}`);
+        return { ok: false, reason, detail: describe(error) };
       }
     },
     onSend: async (pluginName, params) => {
@@ -195,7 +198,9 @@ async function main(): Promise<void> {
         log('info', `插件 ${pluginName} 主动消息已发出 msg_id=${sent.messageId}`);
         return { ok: true, messageId: sent.messageId };
       } catch (error) {
-        return { ok: false, detail: describe(error) };
+        const reason = describeSendFailure(error);
+        log('warn', `插件 ${pluginName} 的主动消息发送失败：${reason} — ${describe(error)}`);
+        return { ok: false, detail: `${reason}: ${describe(error)}` };
       }
     },
     onQuarantine: (pluginName, reason) => {
@@ -219,8 +224,15 @@ async function main(): Promise<void> {
     replies,
     log,
     send: async (instruction) => {
-      const sent = await sendReply(instruction);
-      log('info', `已回复 msg_id=${sent.messageId} msg_seq=${instruction.msgSeq}`);
+      try {
+        const sent = await sendReply(instruction);
+        log('info', `已回复 msg_id=${sent.messageId} msg_seq=${instruction.msgSeq}`);
+      } catch (error) {
+        // 同步回复路径的失败在这里翻译成稳定 reason 并落日志。不再往上抛：
+        // Dispatcher 收到后只会把它原样再记一遍，而它的日志里拿不到 reason，
+        // 等于把刚翻译好的信息丢掉。
+        log('warn', `被动回复发送失败：${describeSendFailure(error)} — ${describe(error)}`);
+      }
     },
   });
 

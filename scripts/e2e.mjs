@@ -127,6 +127,25 @@ async function main() {
     check('单聊回复内容是 echo 插件产出', c2c?.body?.content === 'echo: hi-c2c', `content=${JSON.stringify(c2c?.body?.content)}`);
     check('单聊与群聊的发送互不污染', mock.state.sends.length === 2, `groupSends=${mock.state.sends.length}`);
 
+    // 平台侧失败必须以稳定 reason 到达插件，而不是让插件去解析 err_code。
+    // 40034005「msg_id 已过期」是 AI 类插件最容易撞的一种，内核必须能识别。
+    mock.state.failSendContent = { content: 'echo: failme', errCode: 40034005 };
+    mock.pushGroupAt({ messageId: 'mock-message-fail', content: 'failme' });
+    await waitFor('失败发送已被处理', () =>
+      logs.join('').includes('window_expired'),
+    );
+    check(
+      '平台错误被翻译成稳定 reason（window_expired）',
+      logs.join('').includes('window_expired'),
+      '内核日志里应出现稳定 reason',
+    );
+    check(
+      '失败的那条回复没有被计入成功发送',
+      mock.state.sends.at(-1)?.body?.content === 'echo: failme',
+      `content=${JSON.stringify(mock.state.sends.at(-1)?.body?.content)}`,
+    );
+    mock.state.failSendContent = null;
+
     const exitCode = await new Promise((done) => {
       const timer = setTimeout(() => {
         child.kill('SIGKILL');

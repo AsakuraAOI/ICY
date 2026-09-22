@@ -106,6 +106,8 @@ export function startMockQq(options = {}) {
     resumes: [],
     sends: [],
     c2cSends: [],
+    /** 内容匹配时故意回 err_code，用于验证内核把平台错误翻译成稳定 reason。可运行中改写。 */
+    failSendContent: null,
     link: null,
     readyAt: null,
   };
@@ -159,6 +161,11 @@ export function startMockQq(options = {}) {
           body = null;
         }
         state.sends.push({ groupOpenid: sending[1], body });
+        const fail = state.failSendContent;
+        if (fail !== null && body !== null && body.content === fail.content) {
+          json(res, 200, { err_code: fail.errCode, message: 'mock 拒绝发送' });
+          return;
+        }
         json(res, 200, {
           id: `mock-reply-${state.sends.length}`,
           timestamp: '2026-09-22T10:00:00+08:00',
