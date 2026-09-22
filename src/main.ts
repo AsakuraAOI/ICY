@@ -254,7 +254,7 @@ async function main(): Promise<void> {
    *
    * 关停本身不能变成新的悬挂点：dispatcher.drain() 等的是在途事件，而单事件上限是
    * 4.5 分钟。如果 drain() 或 stopAll() 卡住，进程会一直挂在这里，上层只能 SIGKILL ——
-   * 那时插件子进程反而会被留下当孤儿远期。所以到点强制退出：宁可放弃在途事件，
+   * 那时插件子进程反而会被留下当孤儿。所以到点强制退出：宁可放弃在途事件，
    * 也不留下一个谁也杀不掉的进程。
    */
   const SHUTDOWN_WATCHDOG_MS = 20_000;
