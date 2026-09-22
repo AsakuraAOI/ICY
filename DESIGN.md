@@ -223,6 +223,8 @@ interface InboundEvent {
 
 `mentions` / `arkData` / `msgElements` 与 `attachments` 一样属于**契约字段**：插件直接从 `InboundEvent` 读到，不需要去翻 `raw`。`raw` 的角色是逃生舱，只用于平台新增、尚未纳入契约的字段 —— **它不该成为获取已知内容的唯一途径**。
 
+**`d` 不保证是对象。** payload 来自网络，协议演进、灰度、内部错误都可能让它变成 `null`、数组或标量。归一化对这种输入只做一件事：**降级为不透明事件并保留 `raw`**，绝不对它取属性 —— 那会抛 `TypeError`，而异常会顺着 WebSocket 的 `message` 监听冒出去，直接终结整个进程。消息类事件降级后 `kind` 为 `unknown`，因此没有被动回复窗口（本来也没有 `msg_id` 可回）；非消息事件保持原有分类，不把「事件分类」和「payload 形状」两件事混在一起。
+
 **不要用 `content.startsWith("@bot")` 判事件类型** —— 群 @ 事件的 content 已经去掉前缀了。
 
 ---
@@ -386,6 +388,7 @@ function conversationKey(e: InboundEvent): string {
 - **`trace_id` 必须透传**：OpenAPI 响应 body 有 `trace_id`，响应头有 `X-Tps-trace-ID`。核心记录到日志并按事件维度归因，插件里的报错能追回原始事件。
 - 日志分级 + stdout/stderr 分离：内核自身日志走 stderr；插件日志带 `plugin=<name>` 前缀。
 - AppSecret、access_token **永不进日志**（config 层做一次性脱敏封装）。
+- **不可信输入不得逃逸出处理边界**：事件回调（归一化 → 去重 → 路由）与 READY 解析都在 Gateway 侧被 `try/catch` 兜住，失败按「记日志 + 丢弃该条」处理。理由是同一条异常链路 —— 事件源是外部输入，一条坏帧不能带走整条连接，更不能带走进程；而进程一旦退出，插件子进程会变成孤儿。
 - **进程生命周期要有兜底**：`uncaughtException` / `unhandledRejection` 走关停而不是带崩退出；关停本身带看门狗（20s），到点强制退出。插件是子进程，内核消失不会带走它们 —— 唯一的可靠性来自「退出前一定回收」和「卡住时一定放弃」。启动后期失败（如换取 Gateway 接入点返回 500）同样必须先 `stopAll()` 再退出，否则留下一批没有父进程、也没人会去杀的孤儿。
 - **所有对外请求都必须带超时**（token / Gateway 接入点 / OpenAPI）。没有超时的 `fetch` 在网络卡住时会静默挂死整个启动流程 —— 没有日志、没有错误、没有任何可观测信号，比直接失败更难排查。
 

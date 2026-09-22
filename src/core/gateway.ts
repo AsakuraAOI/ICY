@@ -129,11 +129,18 @@ export class Gateway {
         return;
       case Op.DISPATCH: {
         if (payload.t === LIFECYCLE_EVENT.READY) {
-          const ready = payload.d as ReadyData;
-          this.#sessionId = ready.session_id;
-          this.#reconnectAttempts = 0;
-          this.#log('info', `READY session_id=${ready.session_id}`);
-          this.#options.onReady?.(ready.session_id);
+          // READY 同样来自网络，字段存在性不能假设：d 为 null 时读 session_id 会抛，
+          // 而这条异常会顺着 message 监听冒出去，在连接刚建立时就终结进程。
+          const ready = payload.d as Partial<ReadyData> | null | undefined;
+          if (typeof ready?.session_id === 'string' && ready.session_id !== '') {
+            this.#sessionId = ready.session_id;
+            this.#reconnectAttempts = 0;
+            this.#log('info', `READY session_id=${ready.session_id}`);
+            this.#options.onReady?.(ready.session_id);
+          } else {
+            // 没有 session_id 就 Resume 不了。不假装拿到了：下次断线走重新 Identify。
+            this.#log('warn', 'READY 缺少 session_id，将按重新 Identify 处理');
+          }
           return;
         }
         if (payload.t === LIFECYCLE_EVENT.RESUMED) {
@@ -141,7 +148,17 @@ export class Gateway {
           this.#log('info', 'RESUMED');
           return;
         }
-        this.#options.onDispatch(payload);
+        try {
+          this.#options.onDispatch(payload);
+        } catch (error) {
+          // 归一化 / 去重 / 路由里抛出的异常会顺着 WebSocket 的 message 监听冒出去，
+          // 变成未捕获异常并终结整个进程。事件源是不可信的外部输入，一条坏事件
+          // 不能带走整条连接，更不能带走进程：这里兜住、记日志、丢弃该条。
+          this.#log(
+            'error',
+            `事件处理抛出异常，已丢弃该事件（t=${String(payload.t)}）：${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
         return;
       }
       case Op.RECONNECT:

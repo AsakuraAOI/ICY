@@ -324,6 +324,43 @@ try {
     lifecycleRaw === null ? 'null' : lifecycleRaw.kind,
   );
 
+  // 平台可能送来 d 缺失或畸形的帧。这类输入绝不能让内核抛异常 —— 异常会顺着
+  // WebSocket 的 message 监听冒出去，直接终结进程。
+  let malformedThrew = null;
+  const malformedKinds = [];
+  try {
+    for (const shape of [null, [], 'text', 42]) {
+      const broken = normalize({
+        id: 'evt-broken',
+        op: 0,
+        s: 10,
+        t: 'GROUP_AT_MESSAGE_CREATE',
+        d: shape,
+      });
+      malformedKinds.push(broken === null ? 'null' : broken.kind);
+    }
+  } catch (error) {
+    malformedThrew = error;
+  }
+  check(
+    '消息事件的 d 畸形时降级为 unknown，不抛异常',
+    malformedThrew === null && malformedKinds.every((kind) => kind === 'unknown'),
+    malformedThrew === null ? malformedKinds.join(',') : `threw ${String(malformedThrew)}`,
+  );
+
+  const malformedLifecycle = normalize({
+    id: 'evt-broken-lifecycle',
+    op: 0,
+    s: 11,
+    t: 'FRIEND_ADD',
+    d: null,
+  });
+  check(
+    '非消息事件的分类不因 payload 形状而改变',
+    malformedLifecycle !== null && malformedLifecycle.kind === 'lifecycle',
+    malformedLifecycle === null ? 'null' : malformedLifecycle.kind,
+  );
+
   check(
     '关闭码分支与 DESIGN.md §5.4 一致',
     closeAction(4006) === 'identify' &&

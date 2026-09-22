@@ -139,11 +139,28 @@ export function normalize(payload: GatewayPayload): InboundEvent | null {
   const eventId = payload.id ?? '';
   const seq = payload.s ?? -1;
 
+  // d 来自网络，不保证是对象：协议演进、灰度、内部错误都可能给出 null、数组或标量。
+  // 这里不能硬抽字段 —— 对 null 取属性会抛 TypeError，而该异常会顺着 WebSocket 的
+  // message 监听一路冒出去，直接终结整个进程。畸形输入只降级为不透明事件。
+  const data = payload.d;
+  const isMessageEvent = GROUP_EVENTS.has(eventType) || C2C_EVENTS.has(eventType);
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return {
+      // 消息类事件拿不到对象就抽不了字段，降级为 unknown；非消息事件本来只透传，
+      // 保持它原有的分类，不把「事件分类」和「payload 形状」两件事搅在一起。
+      kind: isMessageEvent ? 'unknown' : LIFECYCLE_EVENTS.has(eventType) ? 'lifecycle' : 'unknown',
+      eventType,
+      eventId,
+      seq,
+      raw: data,
+    };
+  }
+
   if (GROUP_EVENTS.has(eventType)) {
-    return fromGroupMessage(eventType, eventId, seq, payload.d as GroupMessageData);
+    return fromGroupMessage(eventType, eventId, seq, data as GroupMessageData);
   }
   if (C2C_EVENTS.has(eventType)) {
-    return fromC2CMessage(eventType, eventId, seq, payload.d as C2CMessageData);
+    return fromC2CMessage(eventType, eventId, seq, data as C2CMessageData);
   }
 
   return {
