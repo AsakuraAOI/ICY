@@ -22,6 +22,7 @@ import {
   eventsForIntents,
   type IntentName,
 } from '../core/events.js';
+import { DEFAULT_CONCURRENCY, DEFAULT_QUEUE_LIMIT } from '../core/dispatch.js';
 import { CAPABILITIES, type Capability } from './types.js';
 
 export const MANIFEST_FILE = 'plugin.json';
@@ -30,8 +31,9 @@ export const MANIFEST_FILE = 'plugin.json';
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const DEFAULT_PRIORITY = 100;
-const DEFAULT_CONCURRENCY = 1;
-const DEFAULT_QUEUE_LIMIT = 64;
+// concurrency / queueLimit 的默认值只在 core/dispatch.ts 定义一份。两处各写一个默认值
+// 曾经让 Dispatcher 的「默认 8」被这里的 1 静默覆盖，真实插件全部退化成串行 ——
+// 这类分歧必须从结构上消灭，而不是靠人记得同步。
 
 /** manifest 有问题，或者所在目录读不出来。 */
 export class ManifestError extends Error {

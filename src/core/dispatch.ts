@@ -29,7 +29,10 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
  * 「一个插件同时在处理几条事件」的上限，也就是背压。取 1 会把所有会话串成一条线，
  * 与 DESIGN §7.2「不同会话并行」直接矛盾 —— 一个慢群的处理会卡住其他所有群。
  */
-const DEFAULT_CONCURRENCY = 8;
+export const DEFAULT_CONCURRENCY = 8;
+
+/** 单插件默认队列上限。manifest 未声明时用它（见 host/manifest.ts）。 */
+export const DEFAULT_QUEUE_LIMIT = 64;
 
 /** 宿主侧暴露给路由层的一个插件端点。 */
 export interface PluginEndpoint {
@@ -89,7 +92,7 @@ export class Dispatcher {
     this.#replies = options.replies;
     this.#send = options.send;
     this.#log = options.log ?? (() => {});
-    this.#queueLimit = options.queueLimit ?? 64;
+    this.#queueLimit = options.queueLimit ?? DEFAULT_QUEUE_LIMIT;
     this.#defaultConcurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   }
 

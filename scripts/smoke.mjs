@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Dispatcher } from '../dist/core/dispatch.js';
 import { Deduper, dedupeKey } from '../dist/core/dedupe.js';
+import { DEFAULT_CONCURRENCY } from '../dist/core/dispatch.js';
 import { closeAction } from '../dist/core/events.js';
 import { conversationKey, normalize, parseSceneExt } from '../dist/core/normalize.js';
 import { ReplyRegistry } from '../dist/core/pending.js';
@@ -101,6 +102,15 @@ try {
   await supervisor.startAll();
   check('echo 进入 running', supervisor.stateOf('echo') === 'running', `state=${supervisor.stateOf('echo')}`);
   check('没有插件被隔离', supervisor.quarantined.length === 0, supervisor.quarantined.join(', '));
+
+  // manifest 的默认值会覆盖 Dispatcher 的默认值：两处若不一致，dispatch.ts 里那个默认
+  // 对真实插件永远不生效（曾经是 8 与 1 的分歧，真实插件全部退化成串行）。
+  const echoEndpoint = supervisor.endpoints().find((endpoint) => endpoint.name === 'echo');
+  check(
+    '真实插件沿用统一的默认并发度',
+    echoEndpoint?.concurrency === DEFAULT_CONCURRENCY,
+    `concurrency=${String(echoEndpoint?.concurrency)}`,
+  );
 
   // ------------------------------------------------------- 事件投递与回复
   const dispatcher = new Dispatcher({
