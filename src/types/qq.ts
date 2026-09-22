@@ -203,14 +203,81 @@ export interface Keyboard {
   content?: { rows: { buttons: KeyboardButton[] }[] };
 }
 
-/** 发送消息请求体。群聊与单聊共用同一套字段。 */
+/**
+ * msg_type=3 的 ARK 卡片内容。
+ *
+ * 这是**出站** ARK 的完整模型。它与入站的 ARKData（ark_type / ark_name / fields）
+ * 是两套形状 —— 入站字段不能原样提交回发送接口，所以两者不共用类型。
+ */
+export interface ArkBody {
+  /** 卡片模板 ID，由平台侧配置。 */
+  template_id: number;
+  /** 模板变量。key 是模板里的占位符（例如 #DESC# / #LIST#）。 */
+  kv?: ArkKV[];
+}
+
+/** ARK 模板变量。普通变量填 value；列表类变量用 obj 提供一组结构化条目。 */
+export interface ArkKV {
+  /** 模板占位符。 */
+  key: string;
+  /** 纯文本取值。 */
+  value?: string;
+  /** 结构化条目，用于列表类变量。 */
+  obj?: ArkObj[];
+}
+
+/** 列表类 ARK 变量的一个条目。 */
+export interface ArkObj {
+  obj_kv: ArkObjKV[];
+}
+
+/** 列表条目的一个字段。 */
+export interface ArkObjKV {
+  key: string;
+  value: string;
+}
+
+/**
+ * msg_type=4 的 Embed 内容。
+ *
+ * 字段不多但形状是确定的 —— 不用索引签名假装「支持完整 Embed」。将来平台新增字段时，
+ * 走 `request` 逃生舱或按实际协议扩这个类型，而不是先把类型松开。
+ */
+export interface EmbedBody {
+  title?: string;
+  prompt?: string;
+  thumbnail?: EmbedThumbnail;
+  fields?: EmbedField[];
+}
+
+export interface EmbedThumbnail {
+  url: string;
+}
+
+export interface EmbedField {
+  name: string;
+}
+
+/**
+ * 发送消息请求体。群聊与单聊共用同一套字段。
+ *
+ * msg_type 与载荷字段的对应关系（官方 SDK 当前实现）：
+ * 0 → content，2 → markdown，3 → ark，4 → embed，6 → input_notify，7 → media。
+ *
+ * 注意 6 是 C2C 输入状态、7 才是富媒体：两者不是一类东西，不要混。
+ * keyboard / message_reference 不是独立接口，只是这份 body 上的字段。
+ */
 export interface SendMessageBody {
-  /** 0 文本 / 2 Markdown / 6 输入中状态（仅单聊）/ 7 富媒体。 */
-  msg_type?: number;
+  /** 0 文本 / 2 Markdown / 3 ARK / 4 Embed / 6 输入状态（仅单聊）/ 7 富媒体。 */
+  msg_type?: 0 | 2 | 3 | 4 | 6 | 7;
   /** msg_type=0 时为全文。填了 markdown 后此字段必须为空。 */
   content?: string;
   /** msg_type=2 时必填。填了后 content 必须为空。 */
   markdown?: { content?: string; force_verify_image_resource?: boolean };
+  /** msg_type=3 时填写。 */
+  ark?: ArkBody;
+  /** msg_type=4 时填写。 */
+  embed?: EmbedBody;
   /** 被动回复的消息 ID，取自事件的 d.id。群聊 5 分钟内有效。 */
   msg_id?: string;
   /** 被动回复的事件 ID，取自 payload 最外层的 id。与 msg_id 二选一。 */
@@ -238,6 +305,75 @@ export interface SendMessageResponse {
     /** 引用消息索引。 */
     ref_idx?: string;
   };
+}
+
+/**
+ * 富媒体上传请求体（整文件方式）。
+ *
+ * url 与 file_data 二选一：url 由平台自行下载，file_data 是 base64。
+ * file_type=4（普通文件）需要 file_name。srv_send_msg=true 时平台上传后直接下发
+ * 消息，调用方就拿不到 file_info 了 —— 默认 false，走「先上传拿 file_info 再发」。
+ */
+export interface UploadMediaBody {
+  /** 1 图片 / 2 视频 / 3 语音 / 4 文件。取值见 core/media.ts 的 MediaFileType。 */
+  file_type: number;
+  /** 平台自行下载的公网地址。与 file_data 二选一。 */
+  url?: string;
+  /** base64 内容。与 url 二选一。 */
+  file_data?: string;
+  /** file_type=4 时必填。 */
+  file_name?: string;
+  srv_send_msg?: boolean;
+}
+
+/**
+ * 富媒体上传响应。整文件上传与「分片上传完成」共用同一形状。
+ *
+ * 之后发消息只用得上 file_info；ttl 是它的有效期（秒）。
+ */
+export interface UploadMediaResponse {
+  file_uuid?: string;
+  /** 发消息时填进 media.file_info。 */
+  file_info: string;
+  ttl?: number;
+  /** 上传时 srv_send_msg=true 的话，平台已直接下发消息，这里带上消息 ID。 */
+  id?: string;
+}
+
+/** 分片上传 Step 1 的请求体。 */
+export interface UploadPrepareBody {
+  file_type: number;
+  file_name: string;
+  file_size: number;
+  /** 整个文件的 MD5（hex）。 */
+  md5: string;
+  /** 整个文件的 SHA1（hex）。 */
+  sha1: string;
+  /** 前 10 MiB 的 MD5（hex）；文件不足 10 MiB 时就是整个文件的 MD5。 */
+  md5_10m: string;
+}
+
+/** 分片上传 Step 1 的响应。 */
+export interface UploadPrepareResponse {
+  upload_id: string;
+  /** 平台建议的分片大小。最后一片以实际长度为准，不要照抄它。 */
+  block_size: number;
+  parts: { index: number; presigned_url: string }[];
+  /** 平台建议的并发度。 */
+  concurrency?: number;
+  /** 平台建议的重试超时。 */
+  retry_timeout?: number;
+}
+
+/** 分片上传 Step 3 的请求体。 */
+export interface UploadPartFinishBody {
+  upload_id: string;
+  /** 取自 upload_prepare 返回的 parts[].index。 */
+  part_index: number;
+  /** 本片实际上传的字节数 —— 最后一片不是 prepare 给的固定 block_size。 */
+  block_size: number;
+  /** 本片的 MD5（hex）。 */
+  md5: string;
 }
 
 /**

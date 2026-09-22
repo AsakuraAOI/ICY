@@ -142,9 +142,16 @@ export type SendFailureReason =
   | 'muted'
   | 'auth_failed'
   | 'network'
+  | 'media_upload'
   | 'unknown';
 
-/** 把发送路径的失败翻译成稳定 reason。 */
+/**
+ * 把发送路径的失败翻译成稳定 reason。
+ *
+ * 顺序有讲究：ApiError 与 TransportError 先判，MediaUploadError 最后 —— 上传链路里
+ * 的 API 错误必须保留原本的分类（window_expired / auth_failed 之类），
+ * 不能被「它发生在上传阶段」这件事覆盖掉。
+ */
 export function describeSendFailure(error: unknown): SendFailureReason {
   if (error instanceof ApiError) {
     if (isPassiveWindowExpired(error)) return 'window_expired';
@@ -155,6 +162,8 @@ export function describeSendFailure(error: unknown): SendFailureReason {
     return 'unknown';
   }
   if (error instanceof TransportError) return 'network';
+  // 本地失败：取源 / 解码 / 摘要 / 分片编排。具体是哪一步在 message 的 stage= 前缀里。
+  if (error instanceof MediaUploadError) return 'media_upload';
   return 'unknown';
 }
 
@@ -201,6 +210,38 @@ export class TransportError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'TransportError';
+  }
+}
+
+/**
+ * 富媒体上传链路的本地失败。
+ *
+ * 这不是平台协议问题，而是本项目自己的错误 taxonomy 问题：上传是一条多阶段编排
+ * （取源 → 解码 → 摘要 → prepare → 分片 PUT → part_finish → 合并），任何一步塌掉
+ * 都应该能说出是哪一步，而不是统统退化成 unknown。
+ *
+ * **只在本地处理或协议编排失败时使用。** 如果底层拿到的是 QQ REST 的错误响应，
+ * 必须原样抛出 `ApiError`（保留 httpStatus / errCode / traceId / path），
+ * 不要为了「统一」把它包成 MediaUploadError —— 那会把唯一能追回平台侧的信息丢掉。
+ */
+export type MediaUploadStage =
+  | 'source'
+  | 'decode'
+  | 'hash'
+  | 'prepare'
+  | 'part_upload'
+  | 'part_finish'
+  | 'complete';
+
+export class MediaUploadError extends Error {
+  readonly kind = 'media_upload';
+  readonly stage: MediaUploadStage;
+
+  constructor(message: string, stage: MediaUploadStage, options?: ErrorOptions) {
+    // stage 拼进 message：调用方统一只记 message，留在字段里等于没落地。
+    super(`[stage=${stage}] ${message}`, options);
+    this.name = 'MediaUploadError';
+    this.stage = stage;
   }
 }
 

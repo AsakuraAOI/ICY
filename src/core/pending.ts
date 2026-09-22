@@ -13,12 +13,18 @@
  */
 
 import type { InboundEvent } from './normalize.js';
+import { outboundScopeProblem, type OutboundMessage } from './outbound.js';
 
-/** 插件向内核提出的回复请求。内核负责补齐 msg_id 与 msg_seq。 */
+/**
+ * 插件向内核提出的回复请求。内核负责补齐 msg_id 与 msg_seq。
+ *
+ * scope 是插件自报的场景，**不具权威性**：真正决定端点的是 handle 登记时记下的
+ * target。事件来自群，回复就一定发到群 —— 插件填错也不会把消息发去别处。
+ */
 export interface ReplyRequest {
-  /** 必须与事件场景一致：群事件只能填 group，单聊事件只能填 c2c。 */
   scope: 'group' | 'c2c';
-  content: string;
+  /** 想发什么。文本 / Markdown / ARK / Embed / 键盘 / 富媒体都在这一个模型里。 */
+  message: OutboundMessage;
 }
 
 /**
@@ -34,7 +40,7 @@ export type ReplyTarget =
 
 /** 内核校验通过后真正发出去的指令。msg_id 只在这一层出现。 */
 export type ReplyInstruction = ReplyTarget & {
-  content: string;
+  message: OutboundMessage;
   /** 被动回复用的 msg_id，取自事件的 d.id。 */
   msgId: string;
   /** 内核分配的回复序号，从 1 开始递增，避免 40054005「消息被去重」。 */
@@ -55,7 +61,7 @@ export type ReplyRejectionReason =
   | 'expired'
   | 'window_closing'
   | 'exhausted'
-  | 'empty_text';
+  | 'unsupported_scope';
 
 export interface ReplyRejection {
   reason: ReplyRejectionReason;
@@ -149,18 +155,13 @@ export class ReplyRegistry {
    * 窗口剩余不足 minRemainingMs 时提前拒绝，而不是让请求打到 OpenAPI 拿
    * 40034005 —— 插件拿到的是结构化错误，可以自己决定降级策略。
    */
-  resolve(handleId: string, text: string, now: number = Date.now()): ReplyResolution {
+  resolve(handleId: string, message: OutboundMessage, now: number = Date.now()): ReplyResolution {
     const state = this.#handles.get(handleId);
     if (state === undefined) {
       return {
         ok: false,
         error: { reason: 'unknown_handle', detail: `未知或已回收的 handleId=${handleId}` },
       };
-    }
-
-    const content = typeof text === 'string' ? text.trim() : '';
-    if (content === '') {
-      return { ok: false, error: { reason: 'empty_text', detail: '回复内容为空' } };
     }
 
     if (now >= state.expiresAt) {
@@ -189,13 +190,20 @@ export class ReplyRegistry {
       };
     }
 
+    // 会话级能力限制在这里挡：只有这一层知道 handle 登记时的真实场景，插件自报的
+    // scope 不作数。例如输入状态只有单聊有，群聊里回复 typing 就走到这里。
+    const problem = outboundScopeProblem(message, state.target.scope);
+    if (problem !== null) {
+      return { ok: false, error: { reason: 'unsupported_scope', detail: problem } };
+    }
+
     const msgSeq = state.nextSeq;
     state.nextSeq += 1;
     state.remaining -= 1;
 
     return {
       ok: true,
-      instruction: { ...state.target, content, msgId: state.msgId, msgSeq },
+      instruction: { ...state.target, message, msgId: state.msgId, msgSeq },
     };
   }
 

@@ -46,11 +46,27 @@ export class ManifestError extends Error {
   }
 }
 
+/**
+ * 插件的启动方式。缺省（不写 runtime）等价于用内核自己的 Node 直接跑 entry。
+ *
+ * 内核只把它当 spawn 的参数，不解释语言：command 走 PATH 解析或绝对路径，
+ * args 接在 entry 之前。IPC 契约本就语言无关（JSON-RPC 2.0 / NDJSON over stdio），
+ * 所以多语言的代价只在启动方式，不在协议。
+ */
+export interface PluginRuntime {
+  /** 可执行文件，例如 node、python、deno；可以是绝对路径。 */
+  command: string;
+  /** 追加在 entry 之前的参数，例如 ["--experimental-strip-types"]。 */
+  args: string[];
+}
+
 export interface PluginManifest {
   name: string;
   version: string;
-  /** 相对插件目录的入口文件，例如 index.js。 */
+  /** 相对插件目录的入口文件，例如 index.js 或 index.ts。 */
   entry: string;
+  /** 多语言启动方式。缺省用 process.execPath（Node）直接跑 entry，纯 JS 插件零配置。 */
+  runtime?: PluginRuntime;
   intents: IntentName[];
   /** 订阅的事件名，即 payload 的 t。只有声明了才会收到投递。 */
   events: string[];
@@ -59,7 +75,10 @@ export interface PluginManifest {
   config: Record<string, unknown>;
   /** 数值小者先被调用，默认 100。 */
   priority: number;
-  /** 单插件事件并发度，默认 1（保序）。 */
+  /**
+   * 单插件事件并发度，默认取 core/dispatch.ts 的 DEFAULT_CONCURRENCY（8）。
+   * 它只是背压上限，不负责保序 —— 同一会话内的顺序由 Dispatcher 的会话链保证。
+   */
   concurrency: number;
   /** 单插件队列上限，满了丢最旧，默认 64。 */
   queueLimit: number;
@@ -122,7 +141,7 @@ export function parseManifest(raw: unknown, dir: string): PluginManifest {
     }
   }
 
-  return {
+  const manifest: PluginManifest = {
     name,
     version,
     entry,
@@ -136,6 +155,10 @@ export function parseManifest(raw: unknown, dir: string): PluginManifest {
     dir: resolve(dir),
     file,
   };
+
+  // 缺省不写 runtime：走内核自带的 Node，行为与多语言支持之前完全一致。
+  const runtime = readRuntime(record, file);
+  return runtime === null ? manifest : { ...manifest, runtime };
 }
 
 /** 入口文件的绝对路径。supervisor 只允许执行它，不接受插件自报路径。 */
@@ -225,6 +248,26 @@ function readConfig(record: Record<string, unknown>, file: string): Record<strin
     throw new ManifestError(file, 'config 必须是 JSON 对象');
   }
   return value as Record<string, unknown>;
+}
+
+/**
+ * 读取多语言启动方式。
+ *
+ * 只校验形状，不校验可执行文件是否存在、也不解释语言 —— 起不来会在 spawn 阶段
+ * 按既有策略隔离（见 DESIGN.md §6.3 / docs/plugin.md §10），不在解析期提前判死。
+ */
+function readRuntime(record: Record<string, unknown>, file: string): PluginRuntime | null {
+  const value = record.runtime;
+  if (value === undefined) return null;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ManifestError(file, 'runtime 必须是 { command, args? } 对象');
+  }
+  const runtime = value as Record<string, unknown>;
+  const command = runtime.command;
+  if (typeof command !== 'string' || command.trim() === '') {
+    throw new ManifestError(file, 'runtime.command 必须是非空字符串');
+  }
+  return { command: command.trim(), args: readStringArray(runtime, 'args', file) };
 }
 
 function readCapabilities(record: Record<string, unknown>, file: string): Capability[] {

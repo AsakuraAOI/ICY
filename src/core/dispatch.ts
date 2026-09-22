@@ -158,7 +158,7 @@ export class Dispatcher {
         continue;
       }
 
-      const resolution = this.#replies.resolve(handle.handleId, request.content);
+      const resolution = this.#replies.resolve(handle.handleId, request.message);
       if (!resolution.ok) {
         this.#log(
           'warn',

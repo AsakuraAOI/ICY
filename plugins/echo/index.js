@@ -12,7 +12,7 @@
  * 本文件故意不依赖任何库，也不 import 内核代码 —— 插件与内核之间只有 IPC。
  */
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const VERSION = '0.1.0';
 
 // 插件私有配置，由内核从 plugin.json 的 config 字段下发。初值与 plugin.json 一致，
@@ -96,7 +96,7 @@ async function onDispatch(params) {
       return null;
     }
     setTimeout(() => {
-      callHost('host/send', { ...where.target, text: `${replyPrefix}: 主动消息` })
+      callHost('host/send', { ...where.target, body: { kind: 'text', text: `${replyPrefix}: 主动消息` } })
         .then((result) => log(`host/send => ${JSON.stringify(result)}`))
         .catch((error) => log(`host/send 失败：${error.message}`));
     }, 100);
@@ -112,7 +112,7 @@ async function onDispatch(params) {
       return null;
     }
     setTimeout(() => {
-      callHost('host/send', { ...where.target, text: `${replyPrefix}: 待撤回` })
+      callHost('host/send', { ...where.target, body: { kind: 'text', text: `${replyPrefix}: 待撤回` } })
         .then((sent) => {
           if (!sent || sent.ok !== true || typeof sent.messageId !== 'string') {
             throw new Error(`host/send 未返回 messageId：${JSON.stringify(sent)}`);
@@ -131,16 +131,106 @@ async function onDispatch(params) {
   // 异步路径演示：先返回 null，稍后用 host/reply 回。
   if (content === 'async') {
     setTimeout(() => {
-      callHost('host/reply', { handleId: handle.handleId, text: '这是异步回复（host/reply）' })
+      callHost('host/reply', {
+        handleId: handle.handleId,
+        body: { kind: 'text', text: '这是异步回复（host/reply）' },
+      })
         .then((result) => log(`host/reply => ${JSON.stringify(result)}`))
         .catch((error) => log(`host/reply 失败：${error.message}`));
     }, 200);
     return null;
   }
 
+  const where = event.kind === 'c2c' ? 'c2c' : 'group';
+
+  // Markdown 演示：msg_type=2。插件只说「这是 markdown」，msg_type 由内核填。
+  if (content === 'markdown') {
+    return { scope: where, body: { kind: 'markdown', markdown: `**${replyPrefix}**: *斜体* 与列表\n- 一\n- 二` } };
+  }
+
+  // ARK 演示：msg_type=3，同样发到 /messages —— 没有 /ark 这个端点。
+  // template_id 由平台侧配置；kv 的 key 是模板占位符，value 与 obj 二选一。
+  if (content === 'ark') {
+    return {
+      scope: where,
+      body: {
+        kind: 'ark',
+        ark: {
+          template_id: 23,
+          kv: [
+            { key: '#DESC#', value: '示例卡片' },
+            { key: '#LIST#', obj: [{ obj_kv: [{ key: 'desc', value: 'item' }] }] },
+          ],
+        },
+      },
+    };
+  }
+
+  // Embed 演示：msg_type=4。字段形状固定，同样没有独立端点。
+  if (content === 'embed') {
+    return {
+      scope: where,
+      body: {
+        kind: 'embed',
+        embed: {
+          title: '示例 Embed',
+          prompt: '通知栏提示',
+          thumbnail: { url: 'https://example.com/i.png' },
+          fields: [{ name: '字段一' }, { name: '字段二' }],
+        },
+      },
+    };
+  }
+
+  // 内嵌键盘演示：keyboard 不是独立接口，只是消息 body 上的字段，与文本一起提交。
+  if (content === 'keyboard') {
+    return {
+      scope: where,
+      body: {
+        kind: 'text',
+        text: `${replyPrefix}: 请选择`,
+        keyboard: {
+          content: {
+            rows: [
+              {
+                buttons: [
+                  {
+                    id: 'btn_1',
+                    render_data: { label: '确认', visited_label: '已确认', style: 1 },
+                    action: { type: 1, permission: { type: 2 }, data: 'confirm' },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    };
+  }
+
+  // 富媒体演示：插件只交出一个来源（url 或 base64），上传由内核负责 ——
+  // 小文件整传、大文件自动分片，插件看不到 upload_id / presigned_url / file_info。
+  if (content === 'image') {
+    return {
+      scope: where,
+      body: {
+        kind: 'media',
+        fileType: 1,
+        url: 'https://example.com/cat.png',
+        text: `${replyPrefix}: 图来了`,
+      },
+    };
+  }
+
+  // 输入状态演示：msg_type=6，只有单聊有；群聊里发会被内核在发送前拒掉。
+  if (content === 'typing') {
+    if (where !== 'c2c') return { scope: where, body: { kind: 'text', text: '输入状态只有单聊支持' } };
+    return { scope: where, body: { kind: 'typing', inputSecond: 30 } };
+  }
+
   const text = content === '' ? '你好，我收到了你的消息' : `${replyPrefix}: ${content}`;
   // scope 必须与事件场景一致：内核会按句柄的真实目标发送，这里只是自述。
-  return { scope: event.kind === 'c2c' ? 'c2c' : 'group', content: text };
+  return { scope: where, body: { kind: 'text', text } };
 }
 
 async function onRequest(id, method, params) {

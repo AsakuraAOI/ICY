@@ -174,6 +174,104 @@ async function main() {
       `groupSends=${mock.state.sends.length}`,
     );
 
+    // 分类型的发送：插件只表达意图，msg_type 与载荷字段由内核填。全部走同一个 /messages，
+    // 没有 /markdown、/ark、/keyboard 这类端点。
+    const markdownBefore = mock.state.sends.length;
+    mock.pushGroupAt({ messageId: 'mock-message-markdown', content: 'markdown' });
+    if (!(await waitFor('markdown 回复已发出', () => mock.state.sends.length > markdownBefore))) {
+      throw new Error('未观察到 markdown 回复');
+    }
+    const markdown = mock.state.sends.at(-1)?.body;
+    check(
+      'markdown 走同一个发送端点，只是 msg_type=2',
+      markdown?.msg_type === 2 && typeof markdown?.markdown?.content === 'string' && markdown?.content === undefined,
+      JSON.stringify(markdown ?? null),
+    );
+    check(
+      'markdown 回复仍带被动 msg_id',
+      markdown?.msg_id === 'mock-message-markdown',
+      `msg_id=${String(markdown?.msg_id)}`,
+    );
+
+    const arkBefore = mock.state.sends.length;
+    mock.pushGroupAt({ messageId: 'mock-message-ark', content: 'ark' });
+    await waitFor('ARK 回复已发出', () => mock.state.sends.length > arkBefore);
+    const ark = mock.state.sends.at(-1)?.body;
+    check(
+      'ARK 没有独立端点：msg_type=3 + ark 字段，仍发到 /messages',
+      ark?.msg_type === 3 && ark?.ark?.template_id === 23,
+      JSON.stringify(ark ?? null),
+    );
+    check(
+      'ARK 的 kv → obj → obj_kv 结构原样透传（插件不碰 msg_type）',
+      ark?.ark?.kv?.[0]?.value === '示例卡片' &&
+        ark?.ark?.kv?.[1]?.obj?.[0]?.obj_kv?.[0]?.value === 'item',
+      JSON.stringify(ark?.ark ?? null),
+    );
+
+    const embedBefore = mock.state.sends.length;
+    mock.pushGroupAt({ messageId: 'mock-message-embed', content: 'embed' });
+    await waitFor('Embed 回复已发出', () => mock.state.sends.length > embedBefore);
+    const embed = mock.state.sends.at(-1)?.body;
+    check(
+      'Embed 同样是 /messages 上的一条普通消息（msg_type=4）',
+      embed?.msg_type === 4 &&
+        embed?.embed?.thumbnail?.url === 'https://example.com/i.png' &&
+        embed?.embed?.fields?.[1]?.name === '字段二',
+      JSON.stringify(embed ?? null),
+    );
+
+    const keyboardBefore = mock.state.sends.length;
+    mock.pushGroupAt({ messageId: 'mock-message-keyboard', content: 'keyboard' });
+    await waitFor('键盘回复已发出', () => mock.state.sends.length > keyboardBefore);
+    const keyboard = mock.state.sends.at(-1)?.body;
+    check(
+      'keyboard 是同一份 body 上的字段，与文本一起提交',
+      keyboard?.msg_type === 0 &&
+        typeof keyboard?.content === 'string' &&
+        keyboard?.keyboard?.content?.rows?.[0]?.buttons?.[0]?.id === 'btn_1',
+      JSON.stringify(keyboard ?? null),
+    );
+
+    // 富媒体：插件只交出一个 URL，上传由内核完成 —— 先 /files 拿 file_info，再发 msg_type=7。
+    const imageBefore = mock.state.sends.length;
+    mock.pushGroupAt({ messageId: 'mock-message-image', content: 'image' });
+    if (
+      !(await waitFor(
+        '富媒体回复已发出',
+        () => mock.state.uploads.length >= 1 && mock.state.sends.length > imageBefore,
+      ))
+    ) {
+      throw new Error('未观察到富媒体回复');
+    }
+    check(
+      '插件只给 URL，上传由内核完成（插件看不到 file_info 之前的任何东西）',
+      mock.state.uploads[0]?.body?.url === 'https://example.com/cat.png' &&
+        mock.state.uploads[0]?.scope === 'group',
+      JSON.stringify(mock.state.uploads[0]?.body ?? null),
+    );
+    const media = mock.state.sends.at(-1)?.body;
+    check(
+      '媒体消息是 msg_type=7 + media.file_info，且带被动 msg_id',
+      media?.msg_type === 7 &&
+        media?.media?.file_info === 'mock-file-info' &&
+        media?.msg_id === 'mock-message-image',
+      JSON.stringify(media ?? null),
+    );
+
+    // 输入状态（input_notify）：msg_type=6，只有单聊有。它不是图片/语音那类媒体消息。
+    const typingBefore = mock.state.c2cSends.length;
+    mock.pushC2C({ messageId: 'mock-c2c-typing', content: 'typing' });
+    if (!(await waitFor('单聊输入状态已发出', () => mock.state.c2cSends.length > typingBefore))) {
+      throw new Error('未观察到输入状态');
+    }
+    const typing = mock.state.c2cSends.at(-1)?.body;
+    check(
+      '输入状态是 msg_type=6，与媒体消息不是一类',
+      typing?.msg_type === 6 && typing?.input_notify?.input_second === 30 && typing?.media === undefined,
+      JSON.stringify(typing ?? null),
+    );
+
     // 撤回（host/recall）：插件先发一条，再用返回的 messageId 撤掉它。
     // 端点必须是 DELETE /v2/groups/{gid}/messages/{mid}，且不能带响应体解析。
     mock.pushGroupAt({ messageId: 'mock-message-recall', content: 'recall' });

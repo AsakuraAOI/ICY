@@ -19,6 +19,12 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 import type { LogLevel, PluginEndpoint } from '../core/dispatch.js';
 import type { InboundEvent } from '../core/normalize.js';
+import {
+  outboundScopeProblem,
+  parseOutboundMessage,
+  usesMediaCapability,
+  type OutboundMessage,
+} from '../core/outbound.js';
 import type { PublicReplyHandle, ReplyRequest } from '../core/pending.js';
 import { HostRejectionError, RpcPeer } from './ipc.js';
 import { manifestEntryPath, type PluginManifest } from './manifest.js';
@@ -102,7 +108,10 @@ export interface SupervisorOptions {
   onRecall: (pluginName: string, params: HostRecallParams) => Promise<HostRecallResult>;
   /** 插件被 quarantine 的通知（不再自动拉起）。 */
   onQuarantine?: (pluginName: string, reason: string) => void;
-  /** 覆盖子进程可执行文件，默认 process.execPath。测试用。 */
+  /**
+   * 覆盖子进程可执行文件，测试用。优先级：
+   * manifest.runtime.command > execPath > process.execPath。
+   */
   execPath?: string;
   timeouts?: Partial<SupervisorTimeouts>;
 }
@@ -292,7 +301,12 @@ export class PluginProcess {
 
   #spawn(): ChildProcess {
     const entry = manifestEntryPath(this.#manifest);
-    return spawn(this.#options.execPath ?? process.execPath, [entry], {
+    // 多语言：manifest.runtime 决定可执行文件与前置参数。缺省是内核自己的 Node，
+    // 纯 JS 插件的行为与从前完全一致；options.execPath 只留给测试覆盖。
+    const runtime = this.#manifest.runtime;
+    const command = runtime?.command ?? this.#options.execPath ?? process.execPath;
+    const args = [...(runtime?.args ?? []), entry];
+    return spawn(command, args, {
       cwd: this.#manifest.dir,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
@@ -479,15 +493,23 @@ export class PluginProcess {
 
     const record = readRecord(params);
     const handleId = record?.handleId;
-    const text = record?.text;
-    if (typeof handleId !== 'string' || handleId === '' || typeof text !== 'string') {
+    if (typeof handleId !== 'string' || handleId === '') {
       throw new HostRejectionError(
-        'host/reply 需要 { handleId: string, text: string }',
+        'host/reply 需要 { handleId: string, body: OutboundMessage }',
         RpcErrorCode.INVALID_PARAMS,
       );
     }
 
-    return this.#options.onReply(this.#manifest.name, { handleId, text });
+    const parsed = parseOutboundMessage(record?.body);
+    if (!parsed.ok) {
+      throw new HostRejectionError(
+        `host/reply 的 body 不合法（${parsed.reason}）：${parsed.detail}`,
+        RpcErrorCode.INVALID_PARAMS,
+      );
+    }
+    this.#requireMediaCapability(parsed.message);
+
+    return this.#options.onReply(this.#manifest.name, { handleId, body: parsed.message });
   }
 
   async #onHostSend(params: unknown): Promise<HostSendResult> {
@@ -496,38 +518,52 @@ export class PluginProcess {
     }
 
     const record = readRecord(params);
+    const parsed = parseOutboundMessage(record?.body);
+    if (!parsed.ok) {
+      throw new HostRejectionError(
+        `host/send 的 body 不合法（${parsed.reason}）：${parsed.detail}`,
+        RpcErrorCode.INVALID_PARAMS,
+      );
+    }
+    this.#requireMediaCapability(parsed.message);
+
     const scope = record?.scope;
-    const text = record?.text;
-    if (typeof text !== 'string' || text.trim() === '') {
-      throw new HostRejectionError('host/send 需要非空的 text', RpcErrorCode.INVALID_PARAMS);
+    if (scope !== 'group' && scope !== 'c2c') {
+      throw new HostRejectionError(
+        'host/send 的 scope 只支持 "group" 或 "c2c"',
+        RpcErrorCode.INVALID_PARAMS,
+      );
     }
 
-    if (scope === 'group') {
-      const groupOpenid = record?.groupOpenid;
-      if (typeof groupOpenid !== 'string' || groupOpenid === '') {
-        throw new HostRejectionError(
-          'host/send 的群聊参数需要 { scope: "group", groupOpenid: string, text: string }',
-          RpcErrorCode.INVALID_PARAMS,
-        );
-      }
-      return this.#options.onSend(this.#manifest.name, { scope: 'group', groupOpenid, text });
+    // 「输入状态只有单聊」这类会话级限制在这里就挡掉：此刻 scope 是已知的，
+    // 能给出准确原因，而不是等平台回一个没语义的错误码。
+    const problem = outboundScopeProblem(parsed.message, scope);
+    if (problem !== null) {
+      throw new HostRejectionError(
+        `host/send 不支持这条消息：${problem}`,
+        RpcErrorCode.INVALID_PARAMS,
+      );
     }
 
-    if (scope === 'c2c') {
-      const userOpenid = record?.userOpenid;
-      if (typeof userOpenid !== 'string' || userOpenid === '') {
-        throw new HostRejectionError(
-          'host/send 的单聊参数需要 { scope: "c2c", userOpenid: string, text: string }',
-          RpcErrorCode.INVALID_PARAMS,
-        );
-      }
-      return this.#options.onSend(this.#manifest.name, { scope: 'c2c', userOpenid, text });
+    const targetId = scope === 'group' ? record?.groupOpenid : record?.userOpenid;
+    if (typeof targetId !== 'string' || targetId === '') {
+      throw new HostRejectionError(
+        `host/send 的 ${scope} 参数需要非空的 ${scope === 'group' ? 'groupOpenid' : 'userOpenid'}`,
+        RpcErrorCode.INVALID_PARAMS,
+      );
     }
 
-    throw new HostRejectionError(
-      'host/send 的 scope 只支持 "group" 或 "c2c"',
-      RpcErrorCode.INVALID_PARAMS,
-    );
+    return scope === 'group'
+      ? this.#options.onSend(this.#manifest.name, {
+          scope: 'group',
+          groupOpenid: targetId,
+          body: parsed.message,
+        })
+      : this.#options.onSend(this.#manifest.name, {
+          scope: 'c2c',
+          userOpenid: targetId,
+          body: parsed.message,
+        });
   }
 
   async #onHostRecall(params: unknown): Promise<HostRecallResult> {
@@ -570,6 +606,20 @@ export class PluginProcess {
     );
   }
 
+  /**
+   * 富媒体要额外一档 message.media 能力。
+   *
+   * 它会让内核去下载插件给的任意 URL、并向第三方预签名地址发 PUT —— 这不是
+   * 「回个消息」的默认权限，所以单独声明、单独检查。
+   */
+  #requireMediaCapability(message: OutboundMessage): void {
+    if (!usesMediaCapability(message)) return;
+    if (this.#options.catalog.can(this.#manifest.name, 'message.media')) return;
+    throw new HostRejectionError(
+      `插件 ${this.#manifest.name} 发送富媒体需要声明 message.media 能力`,
+    );
+  }
+
   /** 协议流损坏：立刻掐掉进程，剩下的交给 exit 之后的崩溃策略。 */
   #onProtocolFault(error: Error): void {
     this.#log('error', `协议流损坏：${error.message}`);
@@ -586,9 +636,15 @@ export class PluginProcess {
       return null;
     }
 
-    const content = record.content;
-    if (typeof content !== 'string' || content.trim() === '') {
-      this.#log('warn', '插件返回的回复缺少 content，已忽略');
+    const parsed = parseOutboundMessage(record.body);
+    if (!parsed.ok) {
+      this.#log('warn', `插件返回的回复 body 不合法（${parsed.reason}）：${parsed.detail}`);
+      return null;
+    }
+    // 同步路径与 host/reply 必须同一套授权：没有 message.media 就不能借"直接返回"
+    // 绕过去，否则能力声明形同虚设。
+    if (usesMediaCapability(parsed.message) && !this.#options.catalog.can(this.#manifest.name, 'message.media')) {
+      this.#log('warn', `插件 ${this.#manifest.name} 返回了富媒体回复但未声明 message.media，已忽略`);
       return null;
     }
 
@@ -600,7 +656,7 @@ export class PluginProcess {
       return null;
     }
 
-    return { scope: scope === 'c2c' ? 'c2c' : 'group', content };
+    return { scope: scope === 'c2c' ? 'c2c' : 'group', message: parsed.message };
   }
 
   // ------------------------------------------------------------- 健康检查

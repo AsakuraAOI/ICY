@@ -9,7 +9,10 @@
  * 用法：node scripts/smoke.mjs
  */
 
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -20,8 +23,25 @@ import { DEFAULT_CONCURRENCY } from '../dist/core/dispatch.js';
 import { closeAction } from '../dist/core/events.js';
 import { conversationKey, normalize, parseSceneExt } from '../dist/core/normalize.js';
 import { ReplyRegistry } from '../dist/core/pending.js';
-import { getApiBase, setApiBase } from '../dist/core/routes.js';
-import { ApiError, describeRecallFailure, describeSendFailure } from '../dist/core/errors.js';
+import { QQApiClient } from '../dist/core/api.js';
+import {
+  CHUNKED_UPLOAD_THRESHOLD_BYTES,
+  MAX_CONCURRENT_PARTS,
+  MediaFileType,
+  getPartRange,
+  validateParts,
+} from '../dist/core/media.js';
+import { outboundScopeProblem, parseOutboundMessage, sendOutbound } from '../dist/core/outbound.js';
+import {
+  getApiBase,
+  mediaUploadPath,
+  messagePath,
+  recallPath,
+  setApiBase,
+  uploadPartFinishPath,
+  uploadPreparePath,
+} from '../dist/core/routes.js';
+import { ApiError, MediaUploadError, describeRecallFailure, describeSendFailure } from '../dist/core/errors.js';
 import { Gateway } from '../dist/core/gateway.js';
 import { DEFAULT_THROTTLE_LIMITS, SendThrottle } from '../dist/core/throttle.js';
 import { ConfigError, loadConfig } from '../dist/config.js';
@@ -42,6 +62,15 @@ function check(name, ok, detail = '') {
   if (!ok) failures += 1;
   const suffix = detail === '' ? '' : ` — ${detail}`;
   process.stdout.write(`${ok ? 'PASS' : 'FAIL'} ${name}${suffix}\n`);
+}
+
+/** 出站消息模型的正文，仅用于断言。 */
+function textOf(message) {
+  if (message === null || typeof message !== 'object') return null;
+  if (message.kind === 'text') return message.text;
+  if (message.kind === 'markdown') return message.markdown;
+  if (message.kind === 'media') return message.text ?? null;
+  return message.kind;
 }
 
 function groupEvent(patch = {}) {
@@ -92,12 +121,12 @@ try {
     bot: { id: 'smoke-app-id' },
     log: (level, message) => logs.push(`${level} ${message}`),
     onReply: async (_pluginName, params) => {
-      const resolution = replies.resolve(params.handleId, params.text);
+      const resolution = replies.resolve(params.handleId, params.body);
       if (!resolution.ok) {
         return { ok: false, reason: resolution.error.reason, detail: resolution.error.detail };
       }
       hostReplyCalls += 1;
-      delivered.push(resolution.instruction.content);
+      delivered.push(textOf(resolution.instruction.message));
       return { ok: true, messageId: 'smoke-async', msgSeq: resolution.instruction.msgSeq };
     },
     onSend: async () => ({ ok: false, detail: '冒烟自检不使用主动消息' }),
@@ -123,7 +152,7 @@ try {
     replies,
     log: (level, message) => logs.push(`${level} ${message}`),
     send: async (instruction) => {
-      delivered.push(instruction.content);
+      delivered.push(textOf(instruction.message));
     },
   });
 
@@ -642,7 +671,7 @@ try {
         events: ['GROUP_AT_MESSAGE_CREATE'],
         dispatch: async () => {
           fanoutCalls.push('late');
-          return { scope: 'group', content: 'from-late' };
+          return { scope: 'group', message: { kind: 'text', text: 'from-late' } };
         },
       },
       {
@@ -651,13 +680,13 @@ try {
         events: ['GROUP_AT_MESSAGE_CREATE'],
         dispatch: async () => {
           fanoutCalls.push('early');
-          return earlyReplies ? { scope: 'group', content: 'from-early' } : null;
+          return earlyReplies ? { scope: 'group', message: { kind: 'text', text: 'from-early' } } : null;
         },
       },
     ],
     replies: new ReplyRegistry(),
     send: async (instruction) => {
-      fanoutSent.push(instruction.content);
+      fanoutSent.push(textOf(instruction.message));
     },
   });
 
@@ -736,9 +765,54 @@ try {
   const fixtureManifests = await discoverPlugins(resolve(here, 'fixtures'));
   const fixtureNames = fixtureManifests.map((m) => m.name).sort();
   check(
-    '发现 crasher 与 zombie 两个夹具',
-    fixtureNames.length === 2 && fixtureNames[0] === 'crasher' && fixtureNames[1] === 'zombie',
+    '发现 crasher / ts-plugin / zombie 三个夹具',
+    fixtureNames.join('|') === 'crasher|ts-plugin|zombie',
     fixtureNames.join(', ') || '（空）',
+  );
+
+  // ------------------------------- 多语言插件：manifest.runtime 决定用什么跑起来
+  // ts-plugin 的入口是 .ts，靠 Node 原生类型擦除直接执行、不经任何构建。它能走到
+  // running 就证明 #spawn 用的是 runtime.command + runtime.args，而不是硬编码的
+  // process.execPath。它同时钉住 manifest 里的 runtime 被原样解析出来。
+  const tsManifests = fixtureManifests.filter((m) => m.name === 'ts-plugin');
+  const tsCatalog = new PluginCatalog(tsManifests);
+  const tsSupervisor = new Supervisor(tsCatalog, {
+    catalog: tsCatalog,
+    bot: { id: 'smoke-app-id' },
+    log: (level, message) => logs.push(`[ts-plugin] ${level} ${message}`),
+    onReply: async () => ({ ok: false, reason: 'unused', detail: '夹具不回消息' }),
+    onSend: async () => ({ ok: false, detail: '夹具不用主动消息' }),
+    onRecall: async () => ({ ok: false, reason: 'unused', detail: '夹具不撤回消息' }),
+  });
+
+  check(
+    'manifest.runtime 被解析出来',
+    tsManifests[0]?.runtime?.command === 'node' && tsManifests[0].runtime.args.length === 1,
+    JSON.stringify(tsManifests[0]?.runtime ?? null),
+  );
+
+  await tsSupervisor.startAll();
+  check(
+    'TypeScript 入口直接跑起来并完成握手（无需构建）',
+    tsSupervisor.stateOf('ts-plugin') === 'running',
+    `state=${tsSupervisor.stateOf('ts-plugin')}`,
+  );
+
+  const tsReply = await tsSupervisor.endpoints()[0].dispatch(
+    groupEvent({ content: '从 ts 来' }),
+    null,
+  );
+  check(
+    'TS 插件能处理事件并返回回复',
+    tsReply?.message?.text === 'ts: 从 ts 来',
+    JSON.stringify(tsReply ?? null),
+  );
+
+  await tsSupervisor.stopAll();
+  check(
+    'TS 插件已停止',
+    tsSupervisor.stateOf('ts-plugin') === 'stopped',
+    `state=${tsSupervisor.stateOf('ts-plugin')}`,
   );
 
   const crashManifests = fixtureManifests.filter((m) => m.name === 'crasher');
@@ -938,6 +1012,399 @@ try {
   failures += 1;
   process.stderr.write(
     `token 重试自检抛异常：${error && error.stack ? error.stack : String(error)}\n`,
+  );
+}
+
+// ------------------------------------------------- 发送能力：出站模型、路由与富媒体上传
+try {
+  // 1) 出站模型的校验：形状不对在这里就给出稳定 reason，不拖到平台报错。
+  const rejected = [
+    [{ kind: 'text', text: '   ' }, 'empty_message'],
+    [{ kind: 'media', fileType: 9, url: 'https://example.com/a.png' }, 'invalid_media'],
+    [{ kind: 'media', fileType: 1 }, 'invalid_media'],
+    [{ kind: 'media', fileType: MediaFileType.FILE, url: 'https://example.com/a.bin' }, 'invalid_media'],
+    [{ kind: 'nope' }, 'invalid_kind'],
+    ['not-an-object', 'invalid_body'],
+  ];
+  for (const [body, expected] of rejected) {
+    const parsed = parseOutboundMessage(body);
+    check(
+      `非法发送意图被拒（${expected}）`,
+      parsed.ok === false && parsed.reason === expected,
+      parsed.ok === true ? 'ok=true' : `reason=${parsed.reason}`,
+    );
+  }
+  const okText = parseOutboundMessage({ kind: 'text', text: 'hi', keyboard: { id: 'k1' } });
+  check(
+    '合法发送意图带着键盘一起解析',
+    okText.ok === true && okText.message.keyboard?.id === 'k1',
+    JSON.stringify(okText.ok === true ? okText.message : null),
+  );
+  check(
+    '输入状态在群聊里发送前就被挡掉（只有单聊有）',
+    outboundScopeProblem({ kind: 'typing' }, 'group') !== null &&
+      outboundScopeProblem({ kind: 'typing' }, 'c2c') === null,
+    '',
+  );
+
+  // 1b) ARK / Embed 的完整模型：不再靠索引签名假装支持，形状不对就拒。
+  const goodArk = parseOutboundMessage({
+    kind: 'ark',
+    ark: {
+      template_id: 23,
+      kv: [
+        { key: '#DESC#', value: '描述' },
+        { key: '#LIST#', obj: [{ obj_kv: [{ key: 'desc', value: 'item' }] }] },
+      ],
+    },
+  });
+  check(
+    'ARK 的 kv → obj → obj_kv 全链路可表达',
+    goodArk.ok === true &&
+      goodArk.message.ark.template_id === 23 &&
+      goodArk.message.ark.kv?.[0]?.value === '描述' &&
+      goodArk.message.ark.kv?.[1]?.obj?.[0]?.obj_kv?.[0]?.value === 'item',
+    JSON.stringify(goodArk.ok === true ? goodArk.message.ark : null),
+  );
+
+  const badArks = [
+    [{ kind: 'ark', ark: { kv: [] } }, 'invalid_ark'],
+    [{ kind: 'ark', ark: { template_id: 0 } }, 'invalid_ark'],
+    [{ kind: 'ark', ark: { template_id: 1, kv: [{ value: 'x' }] } }, 'invalid_ark'],
+    [{ kind: 'ark', ark: { template_id: 1, kv: [{ key: '#A#', obj: [{}] }] } }, 'invalid_ark'],
+    [
+      {
+        kind: 'ark',
+        ark: { template_id: 1, kv: [{ key: '#A#', obj: [{ obj_kv: [{ key: 'k' }] }] }] },
+      },
+      'invalid_ark',
+    ],
+  ];
+  for (const [body, expected] of badArks) {
+    const parsed = parseOutboundMessage(body);
+    check(
+      `非法 ARK 被拒（${expected}）`,
+      parsed.ok === false && parsed.reason === expected,
+      parsed.ok === true ? 'ok=true' : `reason=${parsed.reason}`,
+    );
+  }
+
+  const goodEmbed = parseOutboundMessage({
+    kind: 'embed',
+    embed: {
+      title: '标题',
+      prompt: '提示',
+      thumbnail: { url: 'https://example.com/i.png' },
+      fields: [{ name: '字段一' }],
+    },
+  });
+  check(
+    'Embed 的 title / prompt / thumbnail / fields 都能表达',
+    goodEmbed.ok === true &&
+      goodEmbed.message.embed.thumbnail?.url === 'https://example.com/i.png' &&
+      goodEmbed.message.embed.fields?.[0]?.name === '字段一',
+    JSON.stringify(goodEmbed.ok === true ? goodEmbed.message.embed : null),
+  );
+  for (const [body, expected] of [
+    [{ kind: 'embed', embed: { thumbnail: {} } }, 'invalid_embed'],
+    [{ kind: 'embed', embed: { fields: [{ value: 'x' }] } }, 'invalid_embed'],
+    [{ kind: 'embed', embed: { title: 1 } }, 'invalid_embed'],
+  ]) {
+    const parsed = parseOutboundMessage(body);
+    check(
+      `非法 Embed 被拒（${expected}）`,
+      parsed.ok === false && parsed.reason === expected,
+      parsed.ok === true ? 'ok=true' : `reason=${parsed.reason}`,
+    );
+  }
+
+  // 1c) 分片的协议防御。offset 完全依赖 (index - 1) * block_size，index 一错就会静默
+  // 上传错误的字节范围 —— 那比直接失败糟糕得多，所以宁可拒绝整个上传。
+  const badPartSets = [
+    [[], 4, 8, '没有任何 parts'],
+    [[{ index: 0, presigned_url: 'u' }], 4, 8, 'index 必须为正整数'],
+    [[{ index: -1, presigned_url: 'u' }], 4, 8, 'index 必须为正整数'],
+    [[{ index: 1, presigned_url: 'u' }, { index: 1, presigned_url: 'v' }], 4, 8, 'index 重复'],
+    [[{ index: 1, presigned_url: '' }], 4, 8, '缺少 presigned_url'],
+    [[{ index: 3, presigned_url: 'u' }], 4, 8, 'offset 超出文件大小'],
+    [[{ index: 1, presigned_url: 'u' }], 4, 8, '分片不完整'],
+  ];
+  for (const [parts, block, size, label] of badPartSets) {
+    let thrown = null;
+    try {
+      validateParts(parts, block, size);
+    } catch (error) {
+      thrown = error;
+    }
+    check(
+      `非法分片集合被拒（${label}）`,
+      thrown !== null && thrown.name === 'MediaUploadError',
+      thrown === null ? '没有抛错' : `${thrown.name}: ${thrown.message}`,
+    );
+  }
+  let validPartsThrew = false;
+  try {
+    validateParts([{ index: 2, presigned_url: 'v' }, { index: 1, presigned_url: 'u' }], 4, 8);
+  } catch {
+    validPartsThrew = true;
+  }
+  check('乱序但完整的 parts 通过校验（不靠数组顺序）', validPartsThrew === false, '');
+  check(
+    'offset 由 (index - 1) * block_size 计算，最后一片取剩余长度',
+    getPartRange({ index: 1 }, 100, 250).offset === 0 &&
+      getPartRange({ index: 2 }, 100, 250).length === 100 &&
+      getPartRange({ index: 3 }, 100, 250).offset === 200 &&
+      getPartRange({ index: 3 }, 100, 250).length === 50,
+    JSON.stringify(getPartRange({ index: 3 }, 100, 250)),
+  );
+
+  // 1d) 错误分类：本地上传失败必须有自己的 reason，而不是统统 unknown。
+  const uploadError = new MediaUploadError('分片上传被拒绝：HTTP 403', 'part_upload');
+  check(
+    'MediaUploadError 归到 media_upload，并且带上 stage',
+    describeSendFailure(uploadError) === 'media_upload' &&
+      uploadError.message.includes('stage=part_upload'),
+    `${describeSendFailure(uploadError)} / ${uploadError.message}`,
+  );
+  check(
+    '平台错误没有被上传链路吞掉：ApiError 的分类照旧',
+    describeSendFailure(
+      new ApiError({
+        httpStatus: 200,
+        path: '/x',
+        errCode: 40034005,
+        traceId: null,
+        body: null,
+        detail: '',
+      }),
+    ) === 'window_expired',
+    '',
+  );
+
+  // 2) 出站模型 → 协议字段的映射。用假 sender 截住真正会发出去的 body。
+  const recorded = [];
+  const fakeSender = {
+    sendGroupMessage: async (id, body) => {
+      recorded.push({ scope: 'group', id, body });
+      return { messageId: 'm1', timestamp: 't' };
+    },
+    sendC2CMessage: async (id, body) => {
+      recorded.push({ scope: 'c2c', id, body });
+      return { messageId: 'm2', timestamp: 't' };
+    },
+    uploadGroupMedia: async (params) => {
+      recorded.push({ upload: params });
+      return { file_info: 'fake-info' };
+    },
+    uploadC2CMedia: async (params) => {
+      recorded.push({ upload: params });
+      return { file_info: 'fake-info' };
+    },
+  };
+
+  await sendOutbound(fakeSender, 'group', 'g1', { kind: 'markdown', markdown: '**x**' }, { msgId: 'e1', msgSeq: 2 });
+  const markdown = recorded[0]?.body;
+  check(
+    'markdown → msg_type=2，并带上内核补的 msg_id / msg_seq',
+    markdown?.msg_type === 2 &&
+      markdown?.markdown?.content === '**x**' &&
+      markdown?.msg_id === 'e1' &&
+      markdown?.msg_seq === 2,
+    JSON.stringify(markdown ?? null),
+  );
+  await sendOutbound(fakeSender, 'group', 'g1', { kind: 'text', text: 'hi', referenceMessageId: 'r1' });
+  check(
+    '引用回复是 body 字段，不是独立接口；msg_seq 缺省为 1',
+    recorded[1]?.body?.message_reference?.message_id === 'r1' && recorded[1]?.body?.msg_seq === 1,
+    JSON.stringify(recorded[1]?.body ?? null),
+  );
+  await sendOutbound(fakeSender, 'c2c', 'u1', { kind: 'media', fileType: MediaFileType.VOICE, data: 'QUFB' });
+  check(
+    '富媒体走「先上传拿 file_info 再发 msg_type=7」，不把二进制塞进 /messages',
+    recorded[2]?.upload?.fileType === 3 &&
+      recorded[3]?.body?.msg_type === 7 &&
+      recorded[3]?.body?.media?.file_info === 'fake-info',
+    JSON.stringify(recorded[3]?.body ?? null),
+  );
+
+  // 3) 真链路：路由形状 + 整文件上传 + 自动分片上传（都打到替身后端）。
+  const mediaMock = await startMockQq({
+    // 乱序返回 parts，并让每个 COS PUT 停 150ms —— 前者验证「字节范围只看 part.index」，
+    // 后者验证「分片真的在并发上传」。
+    shuffleParts: true,
+    partConcurrency: 3,
+    cosPutDelayMs: 150,
+  });
+  const mediaBaseBefore = getApiBase();
+  setApiBase(mediaMock.baseUrl);
+  try {
+    check(
+      '所有会话消息归一到 /messages',
+      messagePath('group', 'g1') === `${mediaMock.baseUrl}/v2/groups/g1/messages` &&
+        messagePath('c2c', 'u1') === `${mediaMock.baseUrl}/v2/users/u1/messages`,
+      messagePath('group', 'g1'),
+    );
+    check(
+      '上传与分片端点按会话对称，完成接口复用 /files',
+      mediaUploadPath('group', 'g1').endsWith('/v2/groups/g1/files') &&
+        uploadPreparePath('c2c', 'u1').endsWith('/v2/users/u1/upload_prepare') &&
+        uploadPartFinishPath('group', 'g1').endsWith('/v2/groups/g1/upload_part_finish'),
+      '',
+    );
+    check(
+      '撤回复用同一路径 + messageId',
+      recallPath('group', 'g1', 'm1').endsWith('/v2/groups/g1/messages/m1'),
+      recallPath('group', 'g1', 'm1'),
+    );
+
+    const api = new QQApiClient({ tokenManager: new TokenManager({ appId: 'x', clientSecret: 'y' }) });
+    await api.sendGroupArk({ groupOpenid: 'g1', ark: { template_id: 7 } });
+    await api.sendGroupEmbed({ groupOpenid: 'g1', embed: { title: 'T' } });
+    await api.sendGroupKeyboard({ groupOpenid: 'g1', content: '请选择', keyboard: { id: 'k1' } });
+    const kinds = mediaMock.state.sends.map((s) => s.body?.msg_type);
+    check(
+      'ARK / Embed / Keyboard 都走同一个发送端点，只有 msg_type 不同',
+      kinds.join(',') === '3,4,0',
+      kinds.join(','),
+    );
+    check(
+      'keyboard 是 body 字段而不是独立接口',
+      mediaMock.state.sends[2]?.body?.keyboard?.id === 'k1',
+      JSON.stringify(mediaMock.state.sends[2]?.body ?? null),
+    );
+
+    await api.sendC2CInputNotify({ userOpenid: 'u1', inputSecond: 30 });
+    const typing = mediaMock.state.c2cSends[0]?.body;
+    check(
+      '输入状态是 msg_type=6，不是媒体消息',
+      typing?.msg_type === 6 && typing?.input_notify?.input_second === 30,
+      JSON.stringify(typing ?? null),
+    );
+
+    // 小文件：整文件上传，URL 交给平台自己下载。
+    await api.sendGroupImage({ groupOpenid: 'g1', url: 'https://example.com/a.png' });
+    const simpleUpload = mediaMock.state.uploads[0];
+    check(
+      'URL 模式完全不碰本地内容：不发 upload_prepare，也没有任何分片请求',
+      simpleUpload?.body?.url === 'https://example.com/a.png' &&
+        simpleUpload?.body?.srv_send_msg === false &&
+        mediaMock.state.prepares.length === 0 &&
+        mediaMock.state.cosPuts.length === 0,
+      JSON.stringify(simpleUpload?.body ?? null),
+    );
+    check(
+      '上传完拿 file_info 发 msg_type=7',
+      mediaMock.state.sends.at(-1)?.body?.media?.file_info === 'mock-file-info',
+      JSON.stringify(mediaMock.state.sends.at(-1)?.body ?? null),
+    );
+
+    // 本地模式 ≥5 MiB 自动分片。用 localPath 验证「流式摘要 + 分片随机读取」：
+    // 6 MiB 的文件全程不整体驻留内存，分片才按 offset 读。
+    const bigSize = CHUNKED_UPLOAD_THRESHOLD_BYTES + 1024 * 1024;
+    const bigBytes = Buffer.allocUnsafe(bigSize);
+    for (let i = 0; i < bigSize; i += 1) bigBytes[i] = i % 251;
+    const tempDir = mkdtempSync(join(tmpdir(), 'icy-smoke-'));
+    const bigPath = join(tempDir, 'report.pdf');
+    writeFileSync(bigPath, bigBytes);
+
+    const blockSize = 4 * 1024 * 1024;
+    const md5Of = (bytes) => createHash('md5').update(bytes).digest('hex');
+
+    try {
+      await api.sendGroupFile({ groupOpenid: 'g1', localPath: bigPath, fileName: 'report.pdf' });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    const prepare = mediaMock.state.prepares[0]?.body;
+    check(
+      'localPath 分片：prepare 带上整个文件的 md5 / sha1 / md5_10m（流式扫描得到）',
+      prepare?.file_size === bigSize &&
+        prepare?.md5 === md5Of(bigBytes) &&
+        prepare?.sha1 === createHash('sha1').update(bigBytes).digest('hex') &&
+        prepare?.md5_10m === prepare?.md5,
+      JSON.stringify(prepare ?? null),
+    );
+
+    const putsByPath = new Map(mediaMock.state.cosPuts.map((put) => [put.path, put]));
+    check(
+      '分片字节范围由 part.index 决定，与 parts 数组顺序无关（此处故意乱序返回）',
+      putsByPath.get('/mock-cos/1')?.md5 === md5Of(bigBytes.subarray(0, blockSize)) &&
+        putsByPath.get('/mock-cos/2')?.md5 === md5Of(bigBytes.subarray(blockSize)),
+      `paths=${[...putsByPath.keys()].join(',')}`,
+    );
+    check(
+      '分片 PUT 不带 QQ Bot 鉴权头（否则 COS 判签名不匹配）',
+      mediaMock.state.cosPuts.length === 2 &&
+        mediaMock.state.cosPuts.every((put) => put.authorization === null),
+      JSON.stringify(mediaMock.state.cosPuts.map((put) => put.authorization)),
+    );
+
+    const arrivalTimes = mediaMock.state.cosPuts.map((put) => put.at).sort((a, b) => a - b);
+    check(
+      '分片按 prepare 的 concurrency 并发上传（串行的话第二个会晚 150ms 以上）',
+      mediaMock.state.cosPuts.length === 2 && arrivalTimes[1] - arrivalTimes[0] < 100,
+      `间隔=${arrivalTimes[1] - arrivalTimes[0]}ms`,
+    );
+
+    const finishes = [...mediaMock.state.partFinishes].sort(
+      (a, b) => a.body.part_index - b.body.part_index,
+    );
+    check(
+      'part_finish 按 part.index 上报，最后一片用实际上传长度',
+      finishes.length === 2 &&
+        finishes[0]?.body?.part_index === 1 &&
+        finishes[0]?.body?.block_size === blockSize &&
+        finishes[1]?.body?.part_index === 2 &&
+        finishes[1]?.body?.block_size === bigSize - blockSize &&
+        finishes[1]?.body?.md5 === md5Of(bigBytes.subarray(blockSize)),
+      JSON.stringify(finishes.map((p) => p.body)),
+    );
+    check(
+      '分片传完后重新 POST /files 带 upload_id（没有独立的 complete 接口）',
+      mediaMock.state.completions.length === 1 &&
+        mediaMock.state.completions[0]?.uploadId === 'mock-upload-1',
+      JSON.stringify(mediaMock.state.completions),
+    );
+    check(
+      '分片链路最终同样落到 msg_type=7，且全程走群聊端点',
+      mediaMock.state.sends.at(-1)?.body?.msg_type === 7 &&
+        mediaMock.state.prepares[0]?.scope === 'group',
+      JSON.stringify(mediaMock.state.sends.at(-1)?.body ?? null),
+    );
+
+    // 并发度上限：服务端给 999 时，本地也必须夹在 MAX_CONCURRENT_PARTS。
+    // 11 × 4 MiB = 44 MiB，刚好够看出峰值是 10 而不是 11。
+    const clampMock = await startMockQq({ partConcurrency: 999, cosPutDelayMs: 300 });
+    const clampBaseBefore = getApiBase();
+    const clampDir = mkdtempSync(join(tmpdir(), 'icy-clamp-'));
+    const clampPath = join(clampDir, 'big.bin');
+    writeFileSync(clampPath, Buffer.alloc(11 * 4 * 1024 * 1024, 0x43));
+    setApiBase(clampMock.baseUrl);
+    try {
+      await api.sendGroupFile({ groupOpenid: 'g9', localPath: clampPath, fileName: 'big.bin' });
+    } finally {
+      rmSync(clampDir, { recursive: true, force: true });
+      setApiBase(clampBaseBefore);
+      clampMock.close();
+    }
+    check(
+      `服务端建议 999 并发时本地仍夹在 ${MAX_CONCURRENT_PARTS}`,
+      MAX_CONCURRENT_PARTS === 10 &&
+        clampMock.state.cosPuts.length === 11 &&
+        // 11 个分片：不夹的话峰值会是 11；夹住之后不可能超过 10。
+        clampMock.state.cosPeakInFlight <= MAX_CONCURRENT_PARTS &&
+        clampMock.state.cosPeakInFlight >= 2,
+      `peak=${clampMock.state.cosPeakInFlight} puts=${clampMock.state.cosPuts.length}`,
+    );
+  } finally {
+    setApiBase(mediaBaseBefore);
+    mediaMock.close();
+  }
+} catch (error) {
+  failures += 1;
+  process.stderr.write(
+    `发送能力自检抛异常：${error && error.stack ? error.stack : String(error)}\n`,
   );
 }
 

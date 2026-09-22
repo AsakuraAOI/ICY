@@ -19,6 +19,7 @@ import { Dispatcher, type LogLevel } from './core/dispatch.js';
 import { FatalError, describeRecallFailure, describeSendFailure } from './core/errors.js';
 import { Gateway } from './core/gateway.js';
 import { normalize } from './core/normalize.js';
+import { sendOutbound } from './core/outbound.js';
 import { ReplyRegistry, type ReplyInstruction } from './core/pending.js';
 import { SendThrottle } from './core/throttle.js';
 import { getApiBase, setApiBase } from './core/routes.js';
@@ -130,21 +131,13 @@ async function main(): Promise<void> {
   /**
    * 被动回复的唯一出口。
    *
-   * 群聊与单聊的定位字段不同，但窗口、msg_id、msg_seq 语义完全一致，所以分流只
-   * 发生在这里，其余代码（句柄校验、发送、日志）两条路径共用。
+   * 出站协议的全部翻译交给 core/outbound.ts：这里只按 scope 选中端点，再把内核
+   * 持有的 msg_id / msg_seq 补上。文本、Markdown、ARK、键盘、富媒体走同一条路，
+   * 差别只在 instruction.message 的 kind。
    */
   const sendReply = async (instruction: ReplyInstruction) => {
-    if (instruction.scope === 'c2c') {
-      return api.sendC2CText({
-        userOpenid: instruction.userOpenid,
-        content: instruction.content,
-        msgId: instruction.msgId,
-        msgSeq: instruction.msgSeq,
-      });
-    }
-    return api.sendGroupText({
-      groupOpenid: instruction.groupOpenid,
-      content: instruction.content,
+    const targetId = instruction.scope === 'c2c' ? instruction.userOpenid : instruction.groupOpenid;
+    return sendOutbound(api, instruction.scope, targetId, instruction.message, {
       msgId: instruction.msgId,
       msgSeq: instruction.msgSeq,
     });
@@ -155,7 +148,7 @@ async function main(): Promise<void> {
     bot: botUsername === undefined ? { id: config.appId } : { id: config.appId, username: botUsername },
     log,
     onReply: async (pluginName, params) => {
-      const resolution = replies.resolve(params.handleId, params.text);
+      const resolution = replies.resolve(params.handleId, params.body);
       if (!resolution.ok) {
         log(
           'warn',
@@ -196,8 +189,8 @@ async function main(): Promise<void> {
       try {
         const sent =
           params.scope === 'c2c'
-            ? await api.sendC2CText({ userOpenid: params.userOpenid, content: params.text })
-            : await api.sendGroupText({ groupOpenid: params.groupOpenid, content: params.text });
+            ? await sendOutbound(api, 'c2c', params.userOpenid, params.body)
+            : await sendOutbound(api, 'group', params.groupOpenid, params.body);
         log(
           'info',
           `插件 ${pluginName} 主动消息已发出 scope=${params.scope} msg_id=${sent.messageId}`,

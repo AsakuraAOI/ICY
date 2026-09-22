@@ -112,6 +112,19 @@ export function startMockQq(options = {}) {
     failSendContent: null,
     /** 数字时所有撤回请求都返回该 err_code，用于验证撤回错误的稳定 reason。可运行中改写。 */
     failRecallErrCode: null,
+    /** 整文件上传（POST /files，不带 upload_id）。 */
+    uploads: [],
+    /** 分片准备（POST /upload_prepare）。 */
+    prepares: [],
+    /** 分片完成通知（POST /upload_part_finish）。 */
+    partFinishes: [],
+    /** 分片合并（POST /files + upload_id）。 */
+    completions: [],
+    /** COS 预签名地址上收到的 PUT：只记长度、md5 与是否误带了鉴权头。 */
+    cosPuts: [],
+    /** 同时在途的 COS PUT 数与峰值，用于验证并发度上限真的生效。 */
+    cosInFlight: 0,
+    cosPeakInFlight: 0,
     link: null,
     readyAt: null,
   };
@@ -203,6 +216,106 @@ export function startMockQq(options = {}) {
         });
         return;
       }
+      // ------------------------------------------------------------ 富媒体上传
+      // 单聊与群聊的差异同样只在路径片段上，所以用一条正则一起处理。
+      const conversation =
+        /^\/v2\/(users|groups)\/([^/]+)\/(files|upload_prepare|upload_part_finish)$/.exec(path);
+      if (conversation !== null && req.method === 'POST') {
+        const scope = conversation[1] === 'users' ? 'c2c' : 'group';
+        const openid = conversation[2];
+        const action = conversation[3];
+        let body = null;
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          body = null;
+        }
+
+        if (action === 'files') {
+          // 同一个端点承担两件事：整文件上传，以及分片传完后的合并（body 带 upload_id）。
+          if (body !== null && typeof body.upload_id === 'string') {
+            state.completions.push({ scope, openid, uploadId: body.upload_id });
+          } else {
+            state.uploads.push({ scope, openid, body });
+          }
+          json(res, 200, {
+            file_uuid: `mock-uuid-${state.uploads.length + state.completions.length}`,
+            file_info: 'mock-file-info',
+            ttl: 3600,
+          });
+          return;
+        }
+
+        if (action === 'upload_prepare') {
+          state.prepares.push({ scope, openid, body });
+          const size = typeof body?.file_size === 'number' ? body.file_size : 0;
+          // 故意用 4 MiB 而不是 5 MiB：让 6 MiB 的测试文件真的切成两片，
+          // 顺便验证内核没有把 prepare 给的 block_size 当成唯一真相。
+          const blockSize = 4 * 1024 * 1024;
+          const count = Math.max(1, Math.ceil(size / blockSize));
+          // index 从 1 开始（官方的 offset = (index - 1) * block_size 就是这个约定）。
+          // 预签名地址带上 index，测试才能断言「哪一片的字节去了哪里」。
+          const parts = [];
+          for (let index = 1; index <= count; index += 1) {
+            parts.push({ index, presigned_url: `http://127.0.0.1:${port}/mock-cos/${index}` });
+          }
+          // 乱序返回：字节范围必须由 part.index 决定，而不是数组位置。
+          if (options.shuffleParts === true) parts.reverse();
+          json(res, 200, {
+            upload_id: `mock-upload-${state.prepares.length}`,
+            block_size: blockSize,
+            parts,
+            concurrency: options.partConcurrency ?? 3,
+            retry_timeout: 5,
+          });
+          return;
+        }
+
+        state.partFinishes.push({ scope, openid, body });
+        json(res, 200, { err_code: 0, message: 'ok' });
+        return;
+      }
+
+      // COS 预签名地址：PUT 原始二进制。这里刻意记录 Authorization —— 预签名地址
+      // 自带签名，多带一个 QQ Bot 鉴权头在真实 COS 上会被判成签名不匹配。
+      if (path.startsWith('/mock-cos/') && req.method === 'PUT') {
+        const bytes = Buffer.concat(chunks);
+        state.cosPuts.push({
+          path,
+          bytes: bytes.length,
+          md5: createHash('md5').update(bytes).digest('hex'),
+          authorization: req.headers.authorization ?? null,
+          // 到达时刻：用来判断分片是并发上传还是串行等待。
+          at: Date.now(),
+        });
+        const delay = options.cosPutDelayMs ?? 0;
+        state.cosInFlight += 1;
+        if (state.cosInFlight > state.cosPeakInFlight) state.cosPeakInFlight = state.cosInFlight;
+        const finish = () => {
+          state.cosInFlight -= 1;
+          res.writeHead(200);
+          res.end();
+        };
+        if (delay > 0) {
+          setTimeout(finish, delay);
+          return;
+        }
+        finish();
+        return;
+      }
+
+      // 待上传的媒体源：返回指定字节数的确定性内容，供内核下载后再分片。
+      const media = /^\/mock-media\/(\d+)$/.exec(path);
+      if (media !== null && req.method === 'GET') {
+        const size = Number(media[1]);
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(size),
+        });
+        res.end(Buffer.alloc(size, 0x41));
+        return;
+      }
+
       json(res, 404, { err_code: 404, message: `mock 未实现 ${req.method} ${path}` });
     });
   });

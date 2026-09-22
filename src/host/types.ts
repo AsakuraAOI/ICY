@@ -10,15 +10,32 @@
 
 import type { IntentName } from '../core/events.js';
 import type { InboundEvent } from '../core/normalize.js';
+import type { OutboundMessage } from '../core/outbound.js';
 import type { PublicReplyHandle, ReplyRequest } from '../core/pending.js';
 
-export type { IntentName, InboundEvent, PublicReplyHandle, ReplyRequest };
+export type { IntentName, InboundEvent, OutboundMessage, PublicReplyHandle, ReplyRequest };
 
-/** IPC 协议版本。握手时比对，不一致直接拒绝加载。 */
-export const IPC_PROTOCOL_VERSION = 1;
+/**
+ * IPC 协议版本。握手时比对，不一致直接拒绝加载。
+ *
+ * v2：回复与主动消息从「一段文本」改成 OutboundMessage（文本 / Markdown / ARK /
+ * Embed / 键盘 / 富媒体），并新增 message.media 能力。这是破坏性变更，版本号必须
+ * 跟着动 —— 否则一个按 v1 写的插件会以为自己发的 text 仍然有效。
+ */
+export const IPC_PROTOCOL_VERSION = 2;
 
-/** 插件可声明的能力。没声明的能力，调用即被内核拒绝。 */
-export const CAPABILITIES = ['message.reply', 'message.send', 'message.recall'] as const;
+/**
+ * 插件可声明的能力。没声明的能力，调用即被内核拒绝。
+ *
+ * message.media 单独一档，不并进 message.reply：它会让内核去下载插件给的任意 URL、
+ * 并向第三方预签名地址发 PUT，是实实在在的新出网行为，值得单独授权。
+ */
+export const CAPABILITIES = [
+  'message.reply',
+  'message.send',
+  'message.media',
+  'message.recall',
+] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /**
@@ -81,10 +98,10 @@ export interface DispatchParams {
   reply: PublicReplyHandle | null;
 }
 
-/** host/reply 的参数：插件只能提交 handleId 与文本。 */
+/** host/reply 的参数：插件只能提交 handleId 与「想发什么」。 */
 export interface HostReplyParams {
   handleId: string;
-  text: string;
+  body: OutboundMessage;
 }
 
 /** host/reply 的返回。失败是结构化结果，不是 JSON-RPC error。 */
@@ -99,8 +116,8 @@ export type HostReplyResult =
  * 后者会允许「两个都传」或「两个都不传」这种无意义的状态，还得在运行时再判一次。
  */
 export type HostSendParams =
-  | { scope: 'group'; groupOpenid: string; text: string }
-  | { scope: 'c2c'; userOpenid: string; text: string };
+  | { scope: 'group'; groupOpenid: string; body: OutboundMessage }
+  | { scope: 'c2c'; userOpenid: string; body: OutboundMessage };
 
 export interface HostSendResult {
   ok: boolean;

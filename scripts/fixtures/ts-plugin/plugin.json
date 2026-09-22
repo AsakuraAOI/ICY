@@ -1,0 +1,10 @@
+{
+  "name": "ts-plugin",
+  "version": "0.1.0",
+  "entry": "index.ts",
+  "runtime": { "command": "node", "args": ["--experimental-strip-types"] },
+  "intents": ["GROUP_AND_C2C_EVENT"],
+  "events": ["GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"],
+  "capabilities": ["message.reply"],
+  "config": { "prefix": "ts" }
+}
