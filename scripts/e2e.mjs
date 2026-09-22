@@ -67,8 +67,9 @@ async function main() {
   child.stderr.on('data', (chunk) => logs.push(String(chunk)));
   child.on('error', (cause) => logs.push(`[spawn error] ${cause.message}`));
 
-  // 场景二（致命关闭码）会在中途创建，放在 try 之外声明，保证 finally 一定能收回它的监听端口。
+  // 场景二/三会在中途创建，放在 try 之外声明，保证 finally 一定能收回它们的监听端口。
   let fatalMock = null;
+  let resumeMock = null;
 
   try {
     if (!(await waitFor('内核读到 token 并拿到 Gateway 接入点', () => mock.state.tokenCalls >= 1 && mock.state.gatewayCalls >= 1))) {
@@ -76,6 +77,7 @@ async function main() {
     }
     check('token 只取了一次', mock.state.tokenCalls === 1, `calls=${mock.state.tokenCalls}`);
     check('Gateway 接入点来自 /gateway', mock.state.gatewayCalls === 1);
+    check('启动时用 /users/@me 验证凭证（P1）', mock.state.selfInfoCalls === 1, `calls=${mock.state.selfInfoCalls}`);
 
     await waitFor('内核发出 Identify 并收到 READY', () => mock.state.readyAt !== null);
 
@@ -136,6 +138,7 @@ async function main() {
     check('收到关停指令后干净退出（code 0）', exitCode === 0, `exit=${String(exitCode)}`);
     check('关停日志出现', logs.join('').includes('已关停'));
     check('关停时插件也被正常停止', logs.join('').includes('插件已停止'));
+    check('机器人 username 已带给插件', logs.join('').includes('机器人凭证可用 id=mock-bot username=icy'), '内核日志应报出凭证校验结果');
 
     // ------------------------------------------- 场景二：致命关闭码（4014 intents 无权限）
     // 服务端在 Identify 之后直接关连接，内核必须停下并退出，而不是无延迟重连刷日志。
@@ -171,6 +174,61 @@ async function main() {
     check('致命关闭码后内核退出（code 1）', fatalExit === 1, `exit=${String(fatalExit)}`);
     check('致命关闭码被识别（4014）', fatalText.includes('4014'), '日志里应出现关闭码');
     check('致命关闭码不触发重连退避', !fatalText.includes('后重连（第'), '不应出现重连日志');
+
+    // --------------------------- 场景三：服务端主动关连接（4009 连接过期）→ Resume 恢复
+    // 网关恢复路径唯一能被真实覆盖的方式：必须看到内核带着 session_id 重连，而不是
+    // 退化成重新 Identify —— 后者会让断连期间的事件全部丢失。
+    resumeMock = await startMockQq({ heartbeatInterval: 1200, closeCodeAfterReady: 4009 });
+    const resumeLogs = [];
+    const resumeChild = spawn(process.execPath, [resolve(root, 'dist/main.js')], {
+      cwd: root,
+      env: {
+        ...process.env,
+        QQ_APP_ID: 'mock-app-id',
+        QQ_APP_SECRET: 'mock-app-secret',
+        QQ_API_BASE: resumeMock.baseUrl,
+        PLUGIN_DIR: resolve(root, 'plugins'),
+        LOG_LEVEL: 'debug',
+      },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      windowsHide: true,
+    });
+    resumeChild.stdout.on('data', (chunk) => resumeLogs.push(String(chunk)));
+    resumeChild.stderr.on('data', (chunk) => resumeLogs.push(String(chunk)));
+
+    await waitFor('关闭后内核重新连上并发出 Resume', () => resumeMock.state.resumes.length >= 1);
+    const resume = resumeMock.state.resumes[0];
+    const resumeText = resumeLogs.join('');
+    check('重连时复用 session_id', resume?.session_id === 'mock-session', `session_id=${String(resume?.session_id)}`);
+    check('Resume 带上最新 seq', resume?.seq === 1, `seq=${String(resume?.seq)}`);
+    check('重连没有退化成重新 Identify', resumeMock.state.identifies.length === 1, `identifies=${resumeMock.state.identifies.length}`);
+    check('重连重新获取了 Gateway 接入点', resumeMock.state.gatewayCalls === 2, `gatewayCalls=${resumeMock.state.gatewayCalls}`);
+    check('内核记录了连接关闭码', resumeText.includes('code=4009'), '日志里应出现 4009');
+
+    resumeMock.pushGroupAt({ content: 'after-resume' });
+    await waitFor('恢复后事件仍能下行', () => resumeMock.state.sends.length >= 1);
+    check(
+      '恢复后被动回复正常',
+      resumeMock.state.sends[0]?.body?.content === 'echo: after-resume',
+      `content=${JSON.stringify(resumeMock.state.sends[0]?.body?.content)}`,
+    );
+
+    const resumeExit = await new Promise((done) => {
+      const timer = setTimeout(() => {
+        resumeChild.kill('SIGKILL');
+        done(null);
+      }, 10000);
+      resumeChild.once('exit', (code) => {
+        clearTimeout(timer);
+        done(code);
+      });
+      try {
+        resumeChild.send({ type: 'shutdown' });
+      } catch {
+        resumeChild.kill('SIGTERM');
+      }
+    });
+    check('恢复后仍能干净关停', resumeExit === 0, `exit=${String(resumeExit)}`);
   } catch (error) {
     console.log(`FAIL ${error instanceof Error ? error.message : String(error)}`);
     failures += 1;
@@ -178,6 +236,7 @@ async function main() {
     if (child.exitCode === null) child.kill('SIGKILL');
     mock.close();
     if (fatalMock !== null) fatalMock.close();
+    if (resumeMock !== null) resumeMock.close();
   }
 
   if (failures > 0) {

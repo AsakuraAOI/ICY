@@ -10,7 +10,7 @@
  */
 
 import { routes } from './routes.js';
-import type { SendMessageBody, SendMessageResponse } from '../types/qq.js';
+import type { BotSelfInfo, SendMessageBody, SendMessageResponse } from '../types/qq.js';
 import { ApiError, TransportError, isAuthFailure, type HttpMethod } from './errors.js';
 import type { TokenManager } from './token.js';
 
@@ -82,6 +82,20 @@ export class QQApiClient {
       body,
     );
     return { messageId: res.id, timestamp: res.timestamp };
+  }
+
+  /**
+   * 机器人自身信息。
+   *
+   * 这是唯一一条只读、无副作用的接口，因此适合在启动阶段用来验证凭证真的可用
+   * （DESIGN.md 的 P1），并把 username 带给插件用于日志归因。
+   */
+  async getSelfInfo(): Promise<BotSelfInfo> {
+    const self = await this.request<BotSelfInfo>('GET', routes.selfInfo());
+    if (typeof self.id !== 'string' || self.id === '') {
+      throw new TransportError('机器人自身信息响应缺少 id');
+    }
+    return self;
   }
 
   /** 原始逃生舱，仅内核内部与受信任插件使用。 */

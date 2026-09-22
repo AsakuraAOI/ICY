@@ -8,8 +8,9 @@
  *   POST /v2/groups/{gid}/messages
  *   以及 Gateway 侧的 Hello → Identify → READY 与心跳 ACK。
  *
- * options.closeCodeOnIdentify 为数字时，Identify 之后立刻用该关闭码关连接，
- * 用于验证内核的致命关闭码分支。
+ * 两个可选开关用于验证内核的关闭码分支：
+ * - options.closeCodeOnIdentify：Identify 之后立刻用该码关连接（验证致命分支）。
+ * - options.closeCodeAfterReady：READY 之后用该码关连接（验证 Resume 恢复分支）。
  *
  * WebSocket 服务端是手写帧实现：Node 只内置了客户端，而本项目不允许引入
  * 运行时依赖。只覆盖小文本帧与 ping/pong/close 这几种真实会出现的控制帧。
@@ -98,6 +99,7 @@ export function startMockQq(options = {}) {
   let seq = 0;
   const state = {
     tokenCalls: 0,
+    selfInfoCalls: 0,
     gatewayCalls: 0,
     heartbeats: 0,
     identifies: [],
@@ -128,6 +130,7 @@ export function startMockQq(options = {}) {
         return;
       }
       if (path === '/users/@me' && req.method === 'GET') {
+        state.selfInfoCalls += 1;
         json(res, 200, { id: 'mock-bot', username: 'icy' });
         return;
       }
@@ -200,6 +203,14 @@ export function startMockQq(options = {}) {
           }),
         );
         state.readyAt = Date.now();
+        // 模拟服务端主动要求重连（例如 4009 连接过期）：READY 之后直接关连接。
+        // 内核此时应带着 session_id + 最新 seq 走 Resume，而不是退化成重新 Identify。
+        if (typeof options.closeCodeAfterReady === 'number') {
+          setTimeout(
+            () => link.closeWith(options.closeCodeAfterReady),
+            options.closeAfterReadyDelayMs ?? 100,
+          );
+        }
       }, 20);
       return;
     }

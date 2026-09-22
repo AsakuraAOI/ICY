@@ -109,6 +109,21 @@ async function main(): Promise<void> {
   const replies = new ReplyRegistry();
   const deduper = new Deduper();
 
+  // P1：凭证是否真的可用只有 /users/@me 能证明。拿到的 username 一并带给插件，
+  // 这样插件日志里显示的是机器人名字而不是一串 AppID。失败不阻断启动 —— 这条
+  // 链路挂了不代表发送链路挂了，记日志即可。
+  let botUsername: string | undefined;
+  try {
+    const self = await api.getSelfInfo();
+    botUsername = self.username;
+    log(
+      'info',
+      `机器人凭证可用 id=${self.id}${self.username === undefined ? '' : ` username=${self.username}`}`,
+    );
+  } catch (error) {
+    log('warn', `机器人自身信息获取失败（不阻断启动）：${describe(error)}`);
+  }
+
   /**
    * 被动回复的唯一出口。
    *
@@ -134,8 +149,7 @@ async function main(): Promise<void> {
 
   const supervisor = new Supervisor(catalog, {
     catalog,
-    // username 要等 READY 才知道，这里先只给 AppID，插件也没理由需要更多。
-    bot: { id: config.appId },
+    bot: botUsername === undefined ? { id: config.appId } : { id: config.appId, username: botUsername },
     log,
     onReply: async (pluginName, params) => {
       const resolution = replies.resolve(params.handleId, params.text);
