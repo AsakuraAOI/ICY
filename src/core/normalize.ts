@@ -8,13 +8,16 @@
 
 import { LIFECYCLE_EVENT as CONNECTION_EVENT, Op } from './events.js';
 import type {
+  ARKData,
   C2CMessageData,
   GatewayPayload,
   GroupMessageData,
   MessageAttachment,
+  MsgElement,
+  QQUser,
 } from '../types/qq.js';
 
-export type { MessageAttachment };
+export type { ARKData, MessageAttachment, MsgElement, QQUser };
 
 export type EventKind = 'group' | 'c2c' | 'lifecycle' | 'unknown';
 
@@ -54,6 +57,12 @@ export interface InboundEvent {
   refMsgIdx?: string;
 
   attachments?: MessageAttachment[];
+  /** 消息里 @ 的其他用户，不含 @ 机器人自身。只有群消息有。 */
+  mentions?: QQUser[];
+  /** message_type=3 时的结构化卡片数据。 */
+  arkData?: ARKData;
+  /** message_type=103（引用消息）时的嵌套内容。 */
+  msgElements?: MsgElement[];
 
   /** 永远保留的原始 d。 */
   raw: unknown;
@@ -183,6 +192,12 @@ function fillCommon(
   if (typeof d.message_type === 'number') event.contentType = d.message_type;
   if (typeof d.timestamp === 'string') event.timestamp = d.timestamp;
   if (Array.isArray(d.attachments)) event.attachments = d.attachments;
+
+  // mentions 只有群消息数据结构里有；单聊没有这个字段，不能直接取。
+  const mentions = 'mentions' in d ? d.mentions : undefined;
+  if (Array.isArray(mentions)) event.mentions = mentions;
+  if (d.ark_data !== undefined) event.arkData = d.ark_data;
+  if (Array.isArray(d.msg_elements)) event.msgElements = d.msg_elements;
 
   const author = d.author;
   if (author !== undefined) {

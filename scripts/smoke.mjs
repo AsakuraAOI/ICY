@@ -237,6 +237,38 @@ try {
       groupRaw.refMsgIdx === 'REFIDX_0==',
     JSON.stringify(groupRaw),
   );
+  // 引用消息 / 卡片 / @ 列表必须落在契约字段上，否则插件只能去翻 raw —— raw 是
+  // 逃生舱，不该成为唯一拿到这些内容的途径。
+  const richRaw = normalize({
+    id: 'evt-rich',
+    op: 0,
+    s: 8,
+    t: 'GROUP_MESSAGE_CREATE',
+    d: {
+      id: 'msg-rich',
+      content: 'look',
+      group_openid: 'group-1',
+      message_type: 103,
+      author: { id: 'uid-1', member_openid: 'member-1' },
+      mentions: [{ id: 'uid-9', member_openid: 'member-9', username: 'other' }],
+      ark_data: { prompt: 'p', ark_type: 't', fields: { a: 1 } },
+      msg_elements: [{ message_type: 0, content: 'quoted' }],
+    },
+  });
+  check(
+    '被引用消息、卡片与 @ 列表都归一化到契约字段',
+    richRaw !== null &&
+      richRaw.contentType === 103 &&
+      richRaw.mentions?.[0]?.member_openid === 'member-9' &&
+      richRaw.arkData?.prompt === 'p' &&
+      richRaw.msgElements?.[0]?.content === 'quoted',
+    JSON.stringify({
+      mentions: richRaw?.mentions,
+      ark: richRaw?.arkData,
+      elements: richRaw?.msgElements,
+    }),
+  );
+
   check(
     '群会话键按群隔离',
     groupRaw !== null && conversationKey(groupRaw) === 'qq:group:group-1',
