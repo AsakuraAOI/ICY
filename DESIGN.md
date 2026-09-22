@@ -242,6 +242,7 @@ interface InboundEvent {
 - **`intents` 必须声明式** —— intents 是连接级参数（Identify 时一次性打包），而且传了无权限的 intents 会导致 Identify 后直接被关连接。所以核心启动时必须先扫完所有 manifest、聚合 intents、再建连。运行中**不能**动态加 intents（要重连）。
 - `events` 用于路由，只有声明了才会收到该事件的 dispatch。
 - `capabilities` 是最小权限模型的起点 —— 例如没声明 `message.reply` 的插件调用 `host/reply` 会被核心拒绝，而不是让它打到 OpenAPI 拿 `11253`。
+- **`config` 是插件私有配置的唯一入口** —— 内核只校验它是 JSON 对象，不解释内容（schema 归插件自己管），并在 `lifecycle/init` 时原样下发。反向红线不变：**内核配置永不下发**，`AppSecret` 与 `access_token` 只存在于内核进程内。
 
 ### 6.2 IPC 帧格式
 

@@ -15,6 +15,10 @@
 const PROTOCOL_VERSION = 1;
 const VERSION = '0.1.0';
 
+// 插件私有配置，由内核从 plugin.json 的 config 字段下发。初值与 plugin.json 一致，
+// 这样 config 缺失时插件也能跑，不会因为读不到配置就崩。
+let replyPrefix = 'echo';
+
 let buffer = '';
 let nextId = 1;
 const pending = new Map();
@@ -86,7 +90,7 @@ async function onDispatch(params) {
     return null;
   }
 
-  const text = content === '' ? '你好，我收到了你的消息' : `echo: ${content}`;
+  const text = content === '' ? '你好，我收到了你的消息' : `${replyPrefix}: ${content}`;
   // scope 必须与事件场景一致：内核会按句柄的真实目标发送，这里只是自述。
   return { scope: event.kind === 'c2c' ? 'c2c' : 'group', content: text };
 }
@@ -103,7 +107,11 @@ async function onRequest(id, method, params) {
         failTo(id, -32602, `不支持的协议版本 ${init.protocolVersion}`);
         return;
       }
-      log(`初始化完成 bot=${init.bot ? init.bot.id : 'unknown'}`);
+      const config = init.config && typeof init.config === 'object' ? init.config : {};
+      if (typeof config.prefix === 'string' && config.prefix.trim() !== '') {
+        replyPrefix = config.prefix.trim();
+      }
+      log(`初始化完成 bot=${init.bot ? init.bot.id : 'unknown'} config=${JSON.stringify(config)}`);
       replyTo(id, { ok: true, version: VERSION });
       notify('plugin/ready', { name: 'echo', version: VERSION, protocolVersion: PROTOCOL_VERSION });
       return;

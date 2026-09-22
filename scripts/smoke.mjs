@@ -66,6 +66,12 @@ try {
   );
 
   // ---------------------------------------------------------- 插件宿主
+  check(
+    'manifest 的 config 被解析（插件私有配置的唯一入口）',
+    manifests[0].config.prefix === 'echo',
+    JSON.stringify(manifests[0].config),
+  );
+
   const catalog = new PluginCatalog(manifests);
   const replies = new ReplyRegistry();
   const delivered = [];

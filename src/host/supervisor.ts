@@ -363,8 +363,9 @@ export class PluginProcess {
     const bot = this.#options.bot;
     const params: PluginInitParams = {
       protocolVersion: IPC_PROTOCOL_VERSION,
-      // manifest 目前没有 config 字段，先给空对象；插件私有配置是后续迭代的事。
-      config: {},
+      // 只下发插件自己的 config（来自 plugin.json）。AppSecret、token 这类内核配置
+      // 永不过界；config.ts 的 Secret 也只提供一次性 expose()。
+      config: this.#manifest.config,
       bot: bot.username === undefined ? { id: bot.id } : { id: bot.id, username: bot.username },
     };
 

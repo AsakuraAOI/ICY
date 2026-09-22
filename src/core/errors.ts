@@ -61,8 +61,11 @@ export class ApiError extends Error {
 
   constructor(init: ApiErrorInit) {
     const errPart = init.errCode === null ? '' : ` err_code=${init.errCode}`;
+    // trace_id 是唯一能把一次失败追回平台侧的依据。调用方统一拿 message 记日志，
+    // 不做特殊处理，所以它必须出现在 message 里，否则等于抓到了却不落地。
+    const tracePart = init.traceId === null ? '' : ` trace_id=${init.traceId}`;
     const detailPart = init.detail === '' ? '' : ` (${init.detail})`;
-    super(`OpenAPI 失败 HTTP ${init.httpStatus} ${init.path}${errPart}${detailPart}`);
+    super(`OpenAPI 失败 HTTP ${init.httpStatus} ${init.path}${errPart}${tracePart}${detailPart}`);
     this.name = 'ApiError';
     this.httpStatus = init.httpStatus;
     this.path = init.path;

@@ -53,6 +53,8 @@ export interface PluginManifest {
   /** 订阅的事件名，即 payload 的 t。只有声明了才会收到投递。 */
   events: string[];
   capabilities: Capability[];
+  /** 插件私有配置，来自 plugin.json 的 config 字段。内核配置永不下发。 */
+  config: Record<string, unknown>;
   /** 数值小者先被调用，默认 100。 */
   priority: number;
   /** 单插件事件并发度，默认 1（保序）。 */
@@ -125,6 +127,7 @@ export function parseManifest(raw: unknown, dir: string): PluginManifest {
     intents,
     events,
     capabilities: readCapabilities(record, file),
+    config: readConfig(record, file),
     priority: readPositiveInt(record, 'priority', file, DEFAULT_PRIORITY),
     concurrency: readPositiveInt(record, 'concurrency', file, DEFAULT_CONCURRENCY),
     queueLimit: readPositiveInt(record, 'queueLimit', file, DEFAULT_QUEUE_LIMIT),
@@ -204,6 +207,22 @@ function readIntentNames(record: Record<string, unknown>, file: string): IntentN
     if (!out.includes(intent)) out.push(intent);
   }
   return out;
+}
+
+/**
+ * 读取插件私有配置。
+ *
+ * 内核只校验「是 JSON 对象」这一层，不解释内容 —— 配置的 schema 归插件自己管，
+ * 内核替它校验只会把插件契约越做越厚。缺省给空对象而不是 undefined，
+ * 免得每个插件都写一遍判空。
+ */
+function readConfig(record: Record<string, unknown>, file: string): Record<string, unknown> {
+  const value = record.config;
+  if (value === undefined) return {};
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ManifestError(file, 'config 必须是 JSON 对象');
+  }
+  return value as Record<string, unknown>;
 }
 
 function readCapabilities(record: Record<string, unknown>, file: string): Capability[] {

@@ -78,6 +78,13 @@ async function main() {
     check('token 只取了一次', mock.state.tokenCalls === 1, `calls=${mock.state.tokenCalls}`);
     check('Gateway 接入点来自 /gateway', mock.state.gatewayCalls === 1);
     check('启动时用 /users/@me 验证凭证（P1）', mock.state.selfInfoCalls === 1, `calls=${mock.state.selfInfoCalls}`);
+    // 插件 init 日志必须带上内核下发的 config：manifest → supervisor → IPC 这条链路
+    // 任何一环断了，这里都会退化成 config={}，断言即失败。
+    check(
+      '插件私有 config 已下发到插件进程',
+      logs.join('').includes('config={"prefix":"echo"}'),
+      '插件 init 日志应带上内核下发的 config',
+    );
 
     await waitFor('内核发出 Identify 并收到 READY', () => mock.state.readyAt !== null);
 
