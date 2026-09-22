@@ -210,12 +210,17 @@ interface InboundEvent {
   msgIdx?: string;            // 从 message_scene.ext 的 "msg_idx=" 解出
   refMsgIdx?: string;
   attachments?: Attachment[];
+  mentions?: QQUser[];        // 消息里 @ 的其他用户，不含机器人自身（仅群消息）
+  arkData?: ARKData;          // message_type=3 结构化卡片
+  msgElements?: MsgElement[]; // message_type=103（引用消息）的嵌套内容
 
   raw: unknown;               // 永远保留
 }
 ```
 
 `message_scene.ext` 是 **`key=value` 格式的字符串数组**（不是对象），归一化时解析成 map。
+
+`mentions` / `arkData` / `msgElements` 与 `attachments` 一样属于**契约字段**：插件直接从 `InboundEvent` 读到，不需要去翻 `raw`。`raw` 的角色是逃生舱，只用于平台新增、尚未纳入契约的字段 —— **它不该成为获取已知内容的唯一途径**。
 
 **不要用 `content.startsWith("@bot")` 判事件类型** —— 群 @ 事件的 content 已经去掉前缀了。
 
