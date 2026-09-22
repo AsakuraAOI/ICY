@@ -127,6 +127,52 @@ async function main() {
     check('单聊回复内容是 echo 插件产出', c2c?.body?.content === 'echo: hi-c2c', `content=${JSON.stringify(c2c?.body?.content)}`);
     check('单聊与群聊的发送互不污染', mock.state.sends.length === 2, `groupSends=${mock.state.sends.length}`);
 
+    // 主动消息（host/send）：不占被动窗口、不带 msg_id，且群/单聊各走各的端点。
+    // 用相对计数而不是绝对值，避免被后面的场景改写后失去意义。
+    const proactiveGroupBefore = mock.state.sends.length;
+    const proactiveC2cBefore = mock.state.c2cSends.length;
+    mock.pushGroupAt({ messageId: 'mock-message-send', content: 'send' });
+    if (!(await waitFor('群聊主动消息已发出', () => mock.state.sends.length > proactiveGroupBefore))) {
+      throw new Error('未观察到群聊主动消息');
+    }
+    const proactiveGroup = mock.state.sends.at(-1);
+    check(
+      '主动消息不带 msg_id（不是被动回复）',
+      proactiveGroup?.body?.msg_id === undefined,
+      `msg_id=${String(proactiveGroup?.body?.msg_id)}`,
+    );
+    check(
+      '群聊主动消息落在原会话',
+      proactiveGroup?.groupOpenid === 'mock-group-1',
+      `group=${String(proactiveGroup?.groupOpenid)}`,
+    );
+    check(
+      '主动消息内容来自插件',
+      proactiveGroup?.body?.content === 'echo: 主动消息',
+      `content=${JSON.stringify(proactiveGroup?.body?.content)}`,
+    );
+
+    mock.pushC2C({ messageId: 'mock-c2c-send', content: 'send' });
+    if (!(await waitFor('单聊主动消息已发出', () => mock.state.c2cSends.length > proactiveC2cBefore))) {
+      throw new Error('未观察到单聊主动消息');
+    }
+    const proactiveC2C = mock.state.c2cSends.at(-1);
+    check(
+      '单聊主动消息走单聊端点',
+      proactiveC2C?.userOpenid === 'mock-c2c-user',
+      `uid=${String(proactiveC2C?.userOpenid)}`,
+    );
+    check(
+      '单聊主动消息不带 msg_id',
+      proactiveC2C?.body?.msg_id === undefined,
+      `msg_id=${String(proactiveC2C?.body?.msg_id)}`,
+    );
+    check(
+      '主动消息没有污染群聊计数',
+      mock.state.sends.length === proactiveGroupBefore + 1,
+      `groupSends=${mock.state.sends.length}`,
+    );
+
     // 平台侧失败必须以稳定 reason 到达插件，而不是让插件去解析 err_code。
     // 40034005「msg_id 已过期」是 AI 类插件最容易撞的一种，内核必须能识别。
     mock.state.failSendContent = { content: 'echo: failme', errCode: 40034005 };

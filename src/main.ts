@@ -181,7 +181,10 @@ async function main(): Promise<void> {
     },
     onSend: async (pluginName, params) => {
       // 频控必须在请求之前：放过去再处理限流错误，等于让插件的行为已经打到平台了。
-      const gate = throttle.take(`group:${params.groupOpenid}`);
+      // 会话键带 scope：群 openid 与用户 openid 是两套 ID 空间，不区分会互相污染额度。
+      const key =
+        params.scope === 'c2c' ? `c2c:${params.userOpenid}` : `group:${params.groupOpenid}`;
+      const gate = throttle.take(key);
       if (!gate.ok) {
         log(
           'warn',
@@ -191,11 +194,14 @@ async function main(): Promise<void> {
       }
 
       try {
-        const sent = await api.sendGroupText({
-          groupOpenid: params.groupOpenid,
-          content: params.text,
-        });
-        log('info', `插件 ${pluginName} 主动消息已发出 msg_id=${sent.messageId}`);
+        const sent =
+          params.scope === 'c2c'
+            ? await api.sendC2CText({ userOpenid: params.userOpenid, content: params.text })
+            : await api.sendGroupText({ groupOpenid: params.groupOpenid, content: params.text });
+        log(
+          'info',
+          `插件 ${pluginName} 主动消息已发出 scope=${params.scope} msg_id=${sent.messageId}`,
+        );
         return { ok: true, messageId: sent.messageId };
       } catch (error) {
         const reason = describeSendFailure(error);

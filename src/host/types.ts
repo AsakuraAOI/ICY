@@ -91,12 +91,15 @@ export type HostReplyResult =
   | { ok: true; messageId: string; msgSeq: number }
   | { ok: false; reason: string; detail: string };
 
-/** host/send 的参数：主动消息，需要 message.send 能力，且受频控。 */
-export interface HostSendParams {
-  scope: 'group';
-  groupOpenid: string;
-  text: string;
-}
+/**
+ * host/send 的参数：主动消息，需要 message.send 能力，且受内核侧频控。
+ *
+ * 群聊与单聊走不同端点、定位字段也不同，所以这里是判别联合而不是两个可选字段 ——
+ * 后者会允许「两个都传」或「两个都不传」这种无意义的状态，还得在运行时再判一次。
+ */
+export type HostSendParams =
+  | { scope: 'group'; groupOpenid: string; text: string }
+  | { scope: 'c2c'; userOpenid: string; text: string };
 
 export interface HostSendResult {
   ok: boolean;

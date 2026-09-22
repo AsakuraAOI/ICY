@@ -4,7 +4,7 @@
   "entry": "index.js",
   "intents": ["GROUP_AND_C2C_EVENT"],
   "events": ["GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"],
-  "capabilities": ["message.reply"],
+  "capabilities": ["message.reply", "message.send"],
   "config": {
     "prefix": "echo"
   },

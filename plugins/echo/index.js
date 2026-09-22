@@ -77,6 +77,25 @@ async function onDispatch(params) {
   const content = typeof event.content === 'string' ? event.content.trim() : '';
   log(`收到 ${event.eventType} content=${JSON.stringify(content)} handle=${handle ? handle.handleId : 'null'}`);
 
+  // 主动消息演示：走 host/send，不占用被动窗口，受内核频控。
+  if (content === 'send') {
+    const target =
+      event.kind === 'c2c'
+        ? { scope: 'c2c', userOpenid: event.userOpenid }
+        : { scope: 'group', groupOpenid: event.groupOpenid };
+    const targetId = target.scope === 'c2c' ? target.userOpenid : target.groupOpenid;
+    if (typeof targetId !== 'string' || targetId === '') {
+      log('事件缺少主动消息目标，忽略');
+      return null;
+    }
+    setTimeout(() => {
+      callHost('host/send', { ...target, text: `${replyPrefix}: 主动消息` })
+        .then((result) => log(`host/send => ${JSON.stringify(result)}`))
+        .catch((error) => log(`host/send 失败：${error.message}`));
+    }, 100);
+    return null;
+  }
+
   // 没有被动窗口（例如群生命周期事件）就什么都不回。
   if (handle === null) return null;
 

@@ -491,16 +491,37 @@ export class PluginProcess {
 
     const record = readRecord(params);
     const scope = record?.scope;
-    const groupOpenid = record?.groupOpenid;
     const text = record?.text;
-    if (scope !== 'group' || typeof groupOpenid !== 'string' || typeof text !== 'string') {
-      throw new HostRejectionError(
-        'host/send 目前只支持 { scope: "group", groupOpenid: string, text: string }',
-        RpcErrorCode.INVALID_PARAMS,
-      );
+    if (typeof text !== 'string' || text.trim() === '') {
+      throw new HostRejectionError('host/send 需要非空的 text', RpcErrorCode.INVALID_PARAMS);
     }
 
-    return this.#options.onSend(this.#manifest.name, { scope: 'group', groupOpenid, text });
+    if (scope === 'group') {
+      const groupOpenid = record?.groupOpenid;
+      if (typeof groupOpenid !== 'string' || groupOpenid === '') {
+        throw new HostRejectionError(
+          'host/send 的群聊参数需要 { scope: "group", groupOpenid: string, text: string }',
+          RpcErrorCode.INVALID_PARAMS,
+        );
+      }
+      return this.#options.onSend(this.#manifest.name, { scope: 'group', groupOpenid, text });
+    }
+
+    if (scope === 'c2c') {
+      const userOpenid = record?.userOpenid;
+      if (typeof userOpenid !== 'string' || userOpenid === '') {
+        throw new HostRejectionError(
+          'host/send 的单聊参数需要 { scope: "c2c", userOpenid: string, text: string }',
+          RpcErrorCode.INVALID_PARAMS,
+        );
+      }
+      return this.#options.onSend(this.#manifest.name, { scope: 'c2c', userOpenid, text });
+    }
+
+    throw new HostRejectionError(
+      'host/send 的 scope 只支持 "group" 或 "c2c"',
+      RpcErrorCode.INVALID_PARAMS,
+    );
   }
 
   /** 协议流损坏：立刻掐掉进程，剩下的交给 exit 之后的崩溃策略。 */

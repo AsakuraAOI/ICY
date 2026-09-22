@@ -271,7 +271,7 @@ interface InboundEvent {
 | 方法 | 类型 | 参数 | 说明 |
 |---|---|---|---|
 | `host/reply` | request | `{ handleId, text }` | 用预登记句柄回复，核心校验窗口与次数 |
-| `host/send` | request | `{ target, text }` | 主动消息，需 `message.send` 能力且受频控 |
+| `host/send` | request | `{ scope: 'group', groupOpenid, text }` 或 `{ scope: 'c2c', userOpenid, text }` | 主动消息，需 `message.send` 能力；**由内核侧频控**，被拒时返回 `rate_limited:*` |
 | `host/log` | notification | `{ level, message, fields? }` | 日志（也允许直接写 stderr） |
 | `plugin/ready` | notification | `{ name, version }` | 就绪信号 |
 
