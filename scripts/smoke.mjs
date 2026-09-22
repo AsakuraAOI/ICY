@@ -420,6 +420,199 @@ try {
   check('窗口滑过后重新放行', t6.ok === true, JSON.stringify(t6));
   check('滑过窗口的会话记录被回收', throttle.conversations <= 2, `conversations=${throttle.conversations}`);
 
+  // ----------------------------------- 路由：会话串行 / 并行（DESIGN §7.2）
+  // 这两条是硬规则，此前一条都没有被测试钉住。全部用假插件，不启子进程。
+
+  const serialLog = [];
+  let releaseSerial = () => {};
+  const serialDispatcher = new Dispatcher({
+    plugins: [
+      {
+        name: 'serial',
+        priority: 100,
+        events: ['GROUP_AT_MESSAGE_CREATE'],
+        dispatch: async (event) => {
+          serialLog.push(`start:${event.content}`);
+          if (event.content === 'first') {
+            await new Promise((resolve) => {
+              releaseSerial = resolve;
+            });
+          }
+          serialLog.push(`end:${event.content}`);
+          return null;
+        },
+      },
+    ],
+    replies: new ReplyRegistry(),
+    send: async () => {},
+  });
+  serialDispatcher.submit(
+    groupEvent({
+      eventId: 'route-serial-1',
+      messageId: 'route-serial-1',
+      content: 'first',
+      groupOpenid: 'g-serial',
+    }),
+  );
+  serialDispatcher.submit(
+    groupEvent({
+      eventId: 'route-serial-2',
+      messageId: 'route-serial-2',
+      content: 'second',
+      groupOpenid: 'g-serial',
+    }),
+  );
+  await delay(80);
+  const serialBeforeRelease = [...serialLog];
+  releaseSerial();
+  await serialDispatcher.drain();
+  check(
+    '同一会话内事件串行：前一条未结束，后一条不开始',
+    serialBeforeRelease.join('|') === 'start:first' &&
+      serialLog.join('|') === 'start:first|end:first|start:second|end:second',
+    serialLog.join('|'),
+  );
+
+  const parallelLog = [];
+  const parallelResolvers = [];
+  const parallelDispatcher = new Dispatcher({
+    plugins: [
+      {
+        name: 'parallel',
+        priority: 100,
+        events: ['GROUP_AT_MESSAGE_CREATE'],
+        dispatch: async (event) => {
+          parallelLog.push(`start:${event.groupOpenid}`);
+          await new Promise((resolve) => parallelResolvers.push(resolve));
+          return null;
+        },
+      },
+    ],
+    replies: new ReplyRegistry(),
+    send: async () => {},
+  });
+  parallelDispatcher.submit(
+    groupEvent({ eventId: 'route-parallel-1', messageId: 'route-parallel-1', groupOpenid: 'g-a' }),
+  );
+  parallelDispatcher.submit(
+    groupEvent({ eventId: 'route-parallel-2', messageId: 'route-parallel-2', groupOpenid: 'g-b' }),
+  );
+  await delay(80);
+  check(
+    '不同会话并行：两个会话都已开工，互不等待',
+    parallelLog.join('|') === 'start:g-a|start:g-b',
+    parallelLog.join('|'),
+  );
+  // 逐个放行：不同会话各自开工与结束的时刻并不相同，一次性放行会漏掉之后才开工的
+  // 那一条，它的 promise 永远不会被 resolve，drain() 就会一直等下去。
+  for (let i = 0; i < 25; i += 1) {
+    for (const resolve of parallelResolvers.splice(0, parallelResolvers.length)) resolve();
+    await delay(20);
+  }
+  await parallelDispatcher.drain();
+
+  // ------------------------------------------- fanout 顺序与胜出规则（DESIGN §7.3）
+  const fanoutCalls = [];
+  const fanoutSent = [];
+  let earlyReplies = false;
+  const fanoutDispatcher = new Dispatcher({
+    plugins: [
+      {
+        name: 'late',
+        priority: 200,
+        events: ['GROUP_AT_MESSAGE_CREATE'],
+        dispatch: async () => {
+          fanoutCalls.push('late');
+          return { scope: 'group', content: 'from-late' };
+        },
+      },
+      {
+        name: 'early',
+        priority: 10,
+        events: ['GROUP_AT_MESSAGE_CREATE'],
+        dispatch: async () => {
+          fanoutCalls.push('early');
+          return earlyReplies ? { scope: 'group', content: 'from-early' } : null;
+        },
+      },
+    ],
+    replies: new ReplyRegistry(),
+    send: async (instruction) => {
+      fanoutSent.push(instruction.content);
+    },
+  });
+
+  fanoutDispatcher.submit(
+    groupEvent({ eventId: 'route-fanout-1', messageId: 'route-fanout-1', groupOpenid: 'g-fanout' }),
+  );
+  await fanoutDispatcher.drain();
+  check(
+    'fanout 按 priority 升序调用，前一个返回 null 时继续下一个',
+    fanoutCalls.join('|') === 'early|late' && fanoutSent.join('|') === 'from-late',
+    `calls=${fanoutCalls.join('|')} sent=${fanoutSent.join('|')}`,
+  );
+
+  fanoutCalls.length = 0;
+  fanoutSent.length = 0;
+  earlyReplies = true;
+  fanoutDispatcher.submit(
+    groupEvent({ eventId: 'route-fanout-2', messageId: 'route-fanout-2', groupOpenid: 'g-fanout' }),
+  );
+  await fanoutDispatcher.drain();
+  check(
+    '第一个返回非 null 的插件胜出，后面的插件根本不被调用',
+    fanoutCalls.join('|') === 'early' && fanoutSent.join('|') === 'from-early',
+    `calls=${fanoutCalls.join('|')} sent=${fanoutSent.join('|')}`,
+  );
+
+  // ----------------------------------------------- 单插件队列背压（DESIGN §6.5）
+  // queueLimit=2，投 5 条不同会话的事件：q1 立刻开工，q4、q5 入队时各挤掉最旧的一条。
+  const queueDrops = [];
+  const queueStarted = [];
+  const busyDispatcher = new Dispatcher({
+    plugins: [
+      {
+        name: 'busy',
+        priority: 100,
+        events: ['GROUP_AT_MESSAGE_CREATE'],
+        // 并发度固定为 1，队列才真的会积压 —— 否则 5 条事件会一起开工，队列上限无从触发。
+        concurrency: 1,
+        queueLimit: 2,
+        dispatch: async (event) => {
+          queueStarted.push(event.content);
+          await delay(200);
+          return null;
+        },
+      },
+    ],
+    replies: new ReplyRegistry(),
+    log: (_level, message) => queueDrops.push(message),
+    send: async () => {},
+  });
+  for (const name of ['q1', 'q2', 'q3', 'q4', 'q5']) {
+    busyDispatcher.submit(
+      groupEvent({
+        eventId: `route-queue-${name}`,
+        messageId: `route-queue-${name}`,
+        content: name,
+        groupOpenid: `g-${name}`,
+      }),
+    );
+  }
+  await delay(80);
+  const dropCount = queueDrops.filter((line) => line.includes('队列已满')).length;
+  check(
+    '队列满时丢弃最旧事件（q1 在跑，q2/q3 被挤掉）',
+    queueStarted.join('|') === 'q1' && dropCount === 2,
+    `started=${queueStarted.join('|')} drops=${dropCount}`,
+  );
+  await busyDispatcher.drain();
+  check(
+    '被丢弃的事件不影响后续事件继续处理',
+    queueStarted.join('|') === 'q1|q4|q5',
+    queueStarted.join('|'),
+  );
+
   // ------------------------------------------- 崩溃重启与 quarantine（P6 加固）
   const fixtureManifests = await discoverPlugins(resolve(here, 'fixtures'));
   const fixtureNames = fixtureManifests.map((m) => m.name).sort();

@@ -22,6 +22,15 @@ import type {
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
+/**
+ * 单插件默认并发度。
+ *
+ * **它不是保序手段。** 同一会话内的顺序由 #chains 保证（见 submit），这里纯粹是
+ * 「一个插件同时在处理几条事件」的上限，也就是背压。取 1 会把所有会话串成一条线，
+ * 与 DESIGN §7.2「不同会话并行」直接矛盾 —— 一个慢群的处理会卡住其他所有群。
+ */
+const DEFAULT_CONCURRENCY = 8;
+
 /** 宿主侧暴露给路由层的一个插件端点。 */
 export interface PluginEndpoint {
   readonly name: string;
@@ -29,7 +38,7 @@ export interface PluginEndpoint {
   readonly priority: number;
   /** 订阅的事件名，即 payload 的 t。只有声明了才会被投递。 */
   readonly events: readonly string[];
-  /** 并发度，默认取 Dispatcher 的配置（1，保序）。 */
+  /** 并发度上限，默认取 Dispatcher 的配置（8）。会话内顺序由会话链保证，与此无关。 */
   readonly concurrency?: number;
   /** 队列上限，默认取 Dispatcher 的配置（64）。 */
   readonly queueLimit?: number;
@@ -48,7 +57,7 @@ export interface DispatcherOptions {
   log?: (level: LogLevel, message: string) => void;
   /** 单插件队列上限，默认 64。 */
   queueLimit?: number;
-  /** 单插件默认并发度，默认 1。 */
+  /** 单插件默认并发度，默认 8。它不是保序手段：会话内顺序由会话链保证。 */
   concurrency?: number;
 }
 
@@ -81,7 +90,7 @@ export class Dispatcher {
     this.#send = options.send;
     this.#log = options.log ?? (() => {});
     this.#queueLimit = options.queueLimit ?? 64;
-    this.#defaultConcurrency = options.concurrency ?? 1;
+    this.#defaultConcurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   }
 
   /** 投递一条已归一化的事件。立即返回，处理在后台按会话串行推进。 */
