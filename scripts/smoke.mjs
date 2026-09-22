@@ -9,6 +9,7 @@
  * 用法：node scripts/smoke.mjs
  */
 
+import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,8 @@ import { Deduper, dedupeKey } from '../dist/core/dedupe.js';
 import { closeAction } from '../dist/core/events.js';
 import { conversationKey, normalize, parseSceneExt } from '../dist/core/normalize.js';
 import { ReplyRegistry } from '../dist/core/pending.js';
+import { getApiBase, setApiBase } from '../dist/core/routes.js';
+import { TokenManager } from '../dist/core/token.js';
 import { aggregateIntents } from '../dist/host/manifest.js';
 import { discoverPlugins, PluginCatalog } from '../dist/host/registry.js';
 import { Supervisor } from '../dist/host/supervisor.js';
@@ -283,6 +286,40 @@ try {
       closeAction(4914) === 'fatal' &&
       closeAction(4915) === 'fatal' &&
       closeAction(4900) === 'identify',
+  );
+
+  // -------------------------------------------- 对外请求必须有超时（防静默挂死）
+  // 本地起一个只接受连接、永不回包的 server，把 token 接口指过去。没有超时的
+  // fetch 会在这里永久挂住 —— 启动流程静默卡死，没有任何日志。这是比失败更糟
+  // 的失败方式，所以必须由测试钉住。
+  const savedApiBase = getApiBase();
+  const hangServer = createServer(() => {});
+  await new Promise((ready) => hangServer.listen(0, '127.0.0.1', ready));
+  const hangAddress = hangServer.address();
+  const hangPort = hangAddress === null || typeof hangAddress === 'string' ? 0 : hangAddress.port;
+
+  setApiBase(`http://127.0.0.1:${hangPort}`);
+  const hangingTokens = new TokenManager({
+    appId: 'x',
+    clientSecret: 'y',
+    timeoutMs: 400,
+  });
+  const hangStartedAt = Date.now();
+  let hangError = null;
+  try {
+    await hangingTokens.get();
+  } catch (error) {
+    hangError = error;
+  }
+  const hangElapsed = Date.now() - hangStartedAt;
+  setApiBase(savedApiBase);
+  if (typeof hangServer.closeAllConnections === 'function') hangServer.closeAllConnections();
+  hangServer.close();
+
+  check(
+    'token 请求超时后抛错，而不是永久挂死',
+    hangError !== null && hangElapsed < 5000,
+    `elapsed=${hangElapsed}ms error=${hangError === null ? 'null' : hangError.name}`,
   );
 
   // ------------------------------------------- 崩溃重启与 quarantine（P6 加固）

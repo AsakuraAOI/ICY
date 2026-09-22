@@ -36,6 +36,8 @@ export interface GatewayOptions {
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** 重连最大次数，默认 10。 */
   maxReconnects?: number;
+  /** 换取 Gateway 接入点的单次请求超时（毫秒），默认 15000。 */
+  requestTimeoutMs?: number;
   /** 致命关闭码（协议错误 / 无权限 / 已下架 / 已封禁）的回调，由 main.ts 决定退出码。 */
   onFatal?: (error: Error) => void;
   /** 收到 op=0 且 t=READY 时回调，携带 session_id。 */
@@ -45,6 +47,7 @@ export interface GatewayOptions {
 export class Gateway {
   readonly #options: GatewayOptions;
   readonly #transport: WsTransport;
+  readonly #requestTimeoutMs: number;
 
   #heartbeatIntervalMs = 45_000;
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -59,6 +62,7 @@ export class Gateway {
   constructor(transport: WsTransport, options: GatewayOptions) {
     this.#transport = transport;
     this.#options = options;
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
     this.#transport.onMessage((data) => this.#onMessage(data));
     this.#transport.onClose((code, reason) => void this.#onClose(code, reason));
   }
@@ -79,9 +83,15 @@ export class Gateway {
   }
 
   async #fetchGatewayUrl(token: string): Promise<string> {
-    const res = await fetch(routes.gateway(), {
-      headers: { Authorization: `QQBot ${token}` },
-    });
+    let res: Response;
+    try {
+      res = await fetch(routes.gateway(), {
+        headers: { Authorization: `QQBot ${token}` },
+        signal: AbortSignal.timeout(this.#requestTimeoutMs),
+      });
+    } catch (cause) {
+      throw new TransportError('获取 Gateway 接入点失败：网络或超时', { cause });
+    }
     if (!res.ok) throw new TransportError(`获取 Gateway 接入点失败 HTTP ${res.status}`);
     const body = (await res.json()) as { url?: unknown };
     if (typeof body.url !== 'string' || body.url === '') {

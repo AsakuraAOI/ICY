@@ -27,6 +27,8 @@ export interface TokenManagerOptions {
   clientSecret: string;
   /** 提前刷新窗口（秒），默认 300。 */
   refreshAheadSeconds?: number;
+  /** 单次请求超时（毫秒），默认 15000。没有它，网络卡住会静默挂死启动。 */
+  timeoutMs?: number;
 }
 
 interface TokenState {
@@ -39,6 +41,7 @@ export class TokenManager {
   readonly #appId: string;
   readonly #clientSecret: string;
   readonly #refreshAheadMs: number;
+  readonly #timeoutMs: number;
   #state: TokenState | null = null;
   #inflight: Promise<string> | null = null;
 
@@ -46,6 +49,7 @@ export class TokenManager {
     this.#appId = options.appId;
     this.#clientSecret = options.clientSecret;
     this.#refreshAheadMs = (options.refreshAheadSeconds ?? 300) * 1000;
+    this.#timeoutMs = options.timeoutMs ?? 15_000;
   }
 
   /** 返回可用 token。并发调用共享同一次刷新，不会打出多个请求。 */
@@ -81,11 +85,19 @@ export class TokenManager {
   }
 
   async #refresh(): Promise<string> {
-    const res = await fetch(routes.token(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ appId: this.#appId, clientSecret: this.#clientSecret }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(routes.token(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appId: this.#appId, clientSecret: this.#clientSecret }),
+        // 没有超时的 fetch 在网络卡住时会静默挂死整个启动流程：没有日志、没有
+        // 错误、没有任何可观测信号，比直接失败更难排查。
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+    } catch (cause) {
+      throw new TransportError('token 接口请求失败：网络或超时', { cause });
+    }
 
     let body: TokenResponse;
     try {
