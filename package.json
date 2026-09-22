@@ -1,0 +1,20 @@
+{
+  "name": "icy-qqbot",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "极简 QQ 官方机器人内核：只做协议接入、事件归一化与插件宿主",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/main.js",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^5.6.0"
+  }
+}

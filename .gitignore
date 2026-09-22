@@ -1,0 +1,11 @@
+node_modules/
+dist/
+
+# 凭证绝不能进仓库
+.env
+.env.local
+.env.*.local
+
+# 运行时产物
+*.log
+.tmp/

@@ -1,0 +1,9 @@
+{
+  "name": "crasher",
+  "version": "0.1.0",
+  "entry": "index.js",
+  "intents": ["GROUP_AND_C2C_EVENT"],
+  "events": ["GROUP_AT_MESSAGE_CREATE"],
+  "capabilities": ["message.reply"],
+  "priority": 100
+}
