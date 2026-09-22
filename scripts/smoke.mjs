@@ -280,13 +280,15 @@ try {
   );
 
   // ------------------------------------------- 崩溃重启与 quarantine（P6 加固）
-  const crashManifests = await discoverPlugins(resolve(here, 'fixtures'));
+  const fixtureManifests = await discoverPlugins(resolve(here, 'fixtures'));
+  const fixtureNames = fixtureManifests.map((m) => m.name).sort();
   check(
-    '发现 crasher 夹具',
-    crashManifests.length === 1 && crashManifests[0].name === 'crasher',
-    crashManifests.map((m) => m.name).join(', ') || '（空）',
+    '发现 crasher 与 zombie 两个夹具',
+    fixtureNames.length === 2 && fixtureNames[0] === 'crasher' && fixtureNames[1] === 'zombie',
+    fixtureNames.join(', ') || '（空）',
   );
 
+  const crashManifests = fixtureManifests.filter((m) => m.name === 'crasher');
   const crashCatalog = new PluginCatalog(crashManifests);
   const crashSupervisor = new Supervisor(crashCatalog, {
     catalog: crashCatalog,
@@ -313,6 +315,38 @@ try {
     crashSupervisor.quarantined.join(', ') || '（空）',
   );
   await crashSupervisor.stopAll();
+
+  // ------------------------------- 健康检查：进程活着但已经不能干活（P6 加固）
+  // zombie 正确握手后不再回任何请求 —— 它不会 exit，从外面看状态一直是 running，
+  // 所以只有主动 ping 才能发现它已经不能干活。这正是退出事件覆盖不到的那类失败。
+  const zombieManifests = fixtureManifests.filter((m) => m.name === 'zombie');
+  const zombieCatalog = new PluginCatalog(zombieManifests);
+  const zombieSupervisor = new Supervisor(zombieCatalog, {
+    catalog: zombieCatalog,
+    bot: { id: 'smoke-app-id' },
+    log: (level, message) => logs.push(`[zombie] ${level} ${message}`),
+    onReply: async () => ({ ok: false, reason: 'unused', detail: '夹具不回消息' }),
+    onSend: async () => ({ ok: false, detail: '夹具不用主动消息' }),
+    // 压缩时间窗：默认 30s 间隔 / 15s 超时，跑一次要一分钟以上。
+    timeouts: { healthCheckMs: 300, callMs: 800, terminateGraceMs: 500, shutdownMs: 500 },
+  });
+
+  await zombieSupervisor.startAll();
+  check(
+    'zombie 首次进入 running（进程还活着）',
+    zombieSupervisor.stateOf('zombie') === 'running',
+    `state=${zombieSupervisor.stateOf('zombie')}`,
+  );
+
+  // 每轮：300ms 后 ping → 800ms 超时 → SIGKILL → 退避 500ms 重启，约 1.6 秒一轮。
+  await delay(9000);
+  const zombieState = zombieSupervisor.stateOf('zombie');
+  check('健康检查发现无响应并最终隔离', zombieState === 'quarantined', `state=${zombieState}`);
+  check(
+    '健康检查失败走了与崩溃同一条路径（有日志）',
+    logs.some((line) => line.includes('健康检查失败')),
+  );
+  await zombieSupervisor.stopAll();
 
   // ------------------------------------------------------------------ 关停
   await supervisor.stopAll();

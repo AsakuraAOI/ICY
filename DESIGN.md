@@ -86,7 +86,9 @@ icy/
     ├── smoke.mjs               进程内冒烟：直接 import dist，断言单元行为
     ├── e2e.mjs                 端到端：spawn dist/main.js 跑真实进程全链路
     ├── e2e/mock-qq.mjs         QQ 后端替身（HTTP + 手写 RFC6455 服务端）
-    └── fixtures/crasher/       必崩插件夹具，验证 restart / quarantine
+    └── fixtures/               测试夹具
+        ├── crasher/            握手后必崩，验证 restart / quarantine
+        └── zombie/             握手后失联，验证健康检查
 ```
 
 自检分两层，互不替代：`smoke.mjs` 覆盖单元语义（去重、窗口、归一化、关闭码映射），
@@ -280,7 +282,15 @@ discovering → spawning → initializing → ready → running
 | spawning | 5s | 标记 quarantined，不再重试 |
 | initializing（等 `plugin/ready`） | 10s | SIGTERM → 5s → SIGKILL，重启一次 |
 | 单事件 dispatch | 4.5min | 见 §7 被动窗口 |
+| 健康检查（`ping`） | 15s | 判定无响应，SIGKILL 后按崩溃策略处理 |
 | shutdown | 5s | SIGKILL |
+
+**健康检查覆盖的是「进程活着但已经不能干活」这一种失败。** 插件退出有 exit 事件兜底，事件循环被卡死的插件却不会退出，只会安静地吞掉所有事件，从外面看状态一直是 `running`。
+
+两个必须遵守的细节：
+
+- **在途事件非 0 时跳过本次 ping。** 插件是单线程的，处理一条长事件时事件循环整个被占住，ping 必然超时 —— 那时掐进程是误杀，而且往往正好落在被动回复窗口里。
+- **失败走与崩溃同一条路径**（kill → exit → 重启 / quarantine），不另立一套策略，否则两处决策会打架。
 
 崩溃重启：指数退避；**60 秒内崩 3 次则 quarantine**，不再自动拉起，只在日志里报。
 
@@ -402,7 +412,7 @@ PLUGIN_DIR=./plugins
 
 ## 11. 待拍板
 
-1. **Node 版本 / WebSocket 方案** —— 你正在升级 Node，升级后我实测 `typeof globalThis.WebSocket` 再定。
+1. ~~**Node 版本 / WebSocket 方案**~~ —— **已收口**：Node v24.21.0 实测 `typeof globalThis.WebSocket === 'function'`，方案 (a) 成立，「零运行时依赖」保持。`core/transport.ts` 启动即探测，缺失直接退出，不做静默降级。
 2. **插件语言** —— 目前按「子进程 + stdio」，理论上可以多语言。是否**允许 C++/多语言插件**？如果只允许 JS，supervisor 可以少一层适配；如果允许多语言，IPC 就必须严格语言无关（当前设计已经是）。
 3. **插件沙箱** —— 子进程隔离了崩溃，但**没有隔离权限**（插件仍能读文件、发网络请求）。要不要做真沙箱（Node 权限模型 / 容器）？我倾向 MVP 不做，但要在文档里明说。
 4. **fanout 语义** —— 是「第一个返回非 null 的胜出」，还是「所有插件都能发消息」？我按前者设计（更符合「被动回复只有一条」的现实）。

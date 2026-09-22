@@ -61,6 +61,13 @@ export interface SupervisorTimeouts {
   callMs: number;
   /** 单事件 dispatch 超时 ≤ 4.5 分钟（被动窗口 5 分钟之内）。 */
   dispatchMs: number;
+  /**
+   * 健康检查间隔（毫秒）。0 表示关闭。
+   *
+   * 只覆盖「进程还活着但已经不能干活」这一种失败：插件退出有 exit 事件兜底，
+   * 而事件循环被卡死、IPC 不再响应的插件不会退出，只会安静地吞掉所有事件。
+   */
+  healthCheckMs: number;
 }
 
 export const DEFAULT_SUPERVISOR_TIMEOUTS: SupervisorTimeouts = {
@@ -70,6 +77,7 @@ export const DEFAULT_SUPERVISOR_TIMEOUTS: SupervisorTimeouts = {
   shutdownMs: 5_000,
   callMs: 15_000,
   dispatchMs: 270_000,
+  healthCheckMs: 30_000,
 };
 
 /** 崩溃计数窗口。 */
@@ -125,6 +133,16 @@ export class PluginProcess {
   #stopping = false;
   /** 初始化阶段已经重启过一次。 */
   #initRestarted = false;
+  /** 健康检查定时器，只有 running 期间存在。 */
+  #healthTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * 正在处理中的事件数。
+   *
+   * 健康检查必须跳过计数非 0 的时刻：插件是单线程的，处理一条长事件时它的
+   * 事件循环整个被占住，ping 必然超时 —— 那时掐进程是误杀，而且往往正好
+   * 落在被动回复窗口里，代价比不检查更高。
+   */
+  #activeDispatches = 0;
   /** running 阶段的崩溃时间戳，用于 60s/3 次的窗口判定。 */
   #crashTimes: number[] = [];
   #restartTimer: ReturnType<typeof setTimeout> | null = null;
@@ -174,8 +192,9 @@ export class PluginProcess {
 
     this.#stopping = false;
     this.#state = 'spawning';
-    // 上一次进程代的就绪信号不能跨代复用。
+    // 上一次进程代的就绪信号与在途计数都不能跨代复用。
     this.#readySignaled = false;
+    this.#activeDispatches = 0;
 
     const child = this.#spawn();
     this.#child = child;
@@ -209,6 +228,7 @@ export class PluginProcess {
 
     this.#state = 'running';
     this.#log('info', `插件就绪 version=${this.#manifest.version}`);
+    this.#startHealthCheck();
   }
 
   /** 正常关停：先 lifecycle/shutdown，再 SIGTERM，最后 SIGKILL。不抛。 */
@@ -251,11 +271,14 @@ export class PluginProcess {
 
     const params: DispatchParams = { event, reply };
     let result: unknown;
+    this.#activeDispatches += 1;
     try {
       result = await peer.request<unknown>(HostMethod.DISPATCH, params, this.#timeouts.dispatchMs);
     } catch (error) {
       this.#log('warn', `event/dispatch 失败：${describe(error)}`);
       return null;
+    } finally {
+      this.#activeDispatches -= 1;
     }
 
     return this.#readReplyRequest(result);
@@ -512,9 +535,50 @@ export class PluginProcess {
     return { scope: scope === 'c2c' ? 'c2c' : 'group', content };
   }
 
+  // ------------------------------------------------------------- 健康检查
+
+  #startHealthCheck(): void {
+    const intervalMs = this.#timeouts.healthCheckMs;
+    if (intervalMs <= 0) return;
+    this.#clearHealthCheck();
+    const timer = setInterval(() => {
+      void this.#ping();
+    }, intervalMs);
+    if (typeof timer.unref === 'function') timer.unref();
+    this.#healthTimer = timer;
+  }
+
+  #clearHealthCheck(): void {
+    if (this.#healthTimer !== null) {
+      clearInterval(this.#healthTimer);
+      this.#healthTimer = null;
+    }
+  }
+
+  /**
+   * 周期性 ping。失败即判定插件已失去响应，掐掉进程 —— 之后的重启 / 隔离决策
+   * 走 #onExit，与崩溃完全同一条路径，不在这里另立一套策略。
+   */
+  async #ping(): Promise<void> {
+    const peer = this.#peer;
+    if (peer === null || this.#state !== 'running' || peer.closed) return;
+    if (this.#activeDispatches > 0) return;
+
+    try {
+      await peer.request(HostMethod.PING, {}, this.#timeouts.callMs);
+    } catch (error) {
+      this.#log('warn', `健康检查失败，插件无响应：${describe(error)}`);
+      this.#clearHealthCheck();
+      this.#peer?.dispose('健康检查失败');
+      this.#child?.kill('SIGKILL');
+    }
+  }
+
   // ------------------------------------------------------------- 崩溃策略
 
   #onExit(code: number | null, signal: NodeJS.Signals | null): void {
+    this.#clearHealthCheck();
+    this.#activeDispatches = 0;
     this.#peer?.dispose(`子进程退出 code=${String(code)} signal=${String(signal)}`);
     this.#peer = null;
     this.#child = null;
@@ -608,6 +672,7 @@ export class PluginProcess {
   }
 
   #cleanup(): void {
+    this.#clearHealthCheck();
     if (this.#restartTimer !== null) {
       clearTimeout(this.#restartTimer);
       this.#restartTimer = null;
