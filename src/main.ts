@@ -110,7 +110,7 @@ async function main(): Promise<void> {
   const replies = new ReplyRegistry();
   const deduper = new Deduper();
   // 主动消息的唯一闸门。被动回复由平台窗口兜底，主动消息没有，只能在这里拦。
-  const throttle = new SendThrottle();
+  const throttle = new SendThrottle(config.sendLimits);
 
   // P1：凭证是否真的可用只有 /users/@me 能证明。拿到的 username 一并带给插件，
   // 这样插件日志里显示的是机器人名字而不是一串 AppID。失败不阻断启动 —— 这条

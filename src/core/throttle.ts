@@ -12,24 +12,35 @@
  * 还是放弃，而不是等一个永远不会来的响应。
  */
 
-export interface ThrottleOptions {
-  /** 单个会话每个窗口允许的条数，默认 4。 */
-  perConversation?: number;
-  /** 全部会话合计每个窗口允许的条数，默认 20。 */
-  global?: number;
-  /** 窗口长度（毫秒），默认 60000。 */
-  windowMs?: number;
+/**
+ * 频控额度。
+ *
+ * 默认值只在 throttle.ts 定义一份，config.ts 从这里取。两处各写一份默认值在这个项目里
+ * 已经造成过真实分歧（并发度 8 被 manifest 的 1 静默覆盖），所以额度也走同一个原则：
+ * 谁拥有这个行为，谁定义它的默认值。
+ */
+export interface ThrottleLimits {
+  /** 单个会话每个窗口允许的条数。 */
+  perConversation: number;
+  /** 全部会话合计每个窗口允许的条数。 */
+  global: number;
+  /** 窗口长度（毫秒）。 */
+  windowMs: number;
 }
+
+export const DEFAULT_THROTTLE_LIMITS: ThrottleLimits = {
+  perConversation: 4,
+  global: 20,
+  windowMs: 60_000,
+};
+
+export type ThrottleOptions = Partial<ThrottleLimits>;
 
 export type ThrottleReason = 'conversation_limit' | 'global_limit';
 
 export type ThrottleResult =
   | { ok: true }
   | { ok: false; reason: ThrottleReason; limit: number; retryAfterMs: number };
-
-const DEFAULT_PER_CONVERSATION = 4;
-const DEFAULT_GLOBAL = 20;
-const DEFAULT_WINDOW_MS = 60_000;
 
 export class SendThrottle {
   readonly #perConversation: number;
@@ -41,9 +52,9 @@ export class SendThrottle {
   #all: number[] = [];
 
   constructor(options: ThrottleOptions = {}) {
-    this.#perConversation = options.perConversation ?? DEFAULT_PER_CONVERSATION;
-    this.#global = options.global ?? DEFAULT_GLOBAL;
-    this.#windowMs = options.windowMs ?? DEFAULT_WINDOW_MS;
+    this.#perConversation = options.perConversation ?? DEFAULT_THROTTLE_LIMITS.perConversation;
+    this.#global = options.global ?? DEFAULT_THROTTLE_LIMITS.global;
+    this.#windowMs = options.windowMs ?? DEFAULT_THROTTLE_LIMITS.windowMs;
   }
 
   /**

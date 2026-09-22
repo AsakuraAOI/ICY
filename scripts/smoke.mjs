@@ -22,7 +22,8 @@ import { conversationKey, normalize, parseSceneExt } from '../dist/core/normaliz
 import { ReplyRegistry } from '../dist/core/pending.js';
 import { getApiBase, setApiBase } from '../dist/core/routes.js';
 import { ApiError, describeSendFailure } from '../dist/core/errors.js';
-import { SendThrottle } from '../dist/core/throttle.js';
+import { DEFAULT_THROTTLE_LIMITS, SendThrottle } from '../dist/core/throttle.js';
+import { ConfigError, loadConfig } from '../dist/config.js';
 import { TokenManager } from '../dist/core/token.js';
 import { aggregateIntents } from '../dist/host/manifest.js';
 import { discoverPlugins, PluginCatalog } from '../dist/host/registry.js';
@@ -403,6 +404,38 @@ try {
 
   // ---------------------------------------------------------- 主动消息频控
   // 主动消息没有平台被动窗口兜底，闸门必须在内核里。时间戳全部注入，不依赖真实时钟。
+  // 额度必须能配置，且非法值直接拒绝 —— 静默降级会让人以为限流生效了，实际没有。
+  const parsedLimits = loadConfig({
+    QQ_APP_ID: 'x',
+    QQ_APP_SECRET: 'y',
+    QQ_SEND_PER_CONVERSATION: '9',
+    QQ_SEND_GLOBAL: '99',
+    QQ_SEND_WINDOW_MS: '30000',
+  }).sendLimits;
+  check(
+    '频控额度来自环境变量',
+    parsedLimits.perConversation === 9 &&
+      parsedLimits.global === 99 &&
+      parsedLimits.windowMs === 30000,
+    JSON.stringify(parsedLimits),
+  );
+  check(
+    '未设置时沿用 throttle.ts 的默认值（单一来源）',
+    loadConfig({ QQ_APP_ID: 'x', QQ_APP_SECRET: 'y' }).sendLimits.perConversation ===
+      DEFAULT_THROTTLE_LIMITS.perConversation,
+  );
+  let limitError = null;
+  try {
+    loadConfig({ QQ_APP_ID: 'x', QQ_APP_SECRET: 'y', QQ_SEND_GLOBAL: '0' });
+  } catch (error) {
+    limitError = error;
+  }
+  check(
+    '非法频控额度直接报错，不静默降级',
+    limitError instanceof ConfigError,
+    limitError === null ? 'null' : limitError.name,
+  );
+
   const throttle = new SendThrottle({ perConversation: 2, global: 3, windowMs: 1000 });
   const t0 = 1_000_000;
   const t1 = throttle.take('group:a', t0);
