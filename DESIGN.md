@@ -78,11 +78,20 @@ icy/
 │   │   └── registry.ts         插件发现与能力索引                              ~80 行
 │   └── types/
 │       └── qq.ts               QQ 原始 payload 类型（只描述不加工）             ~150 行
-└── plugins/
-    └── echo/                   示例插件（不属于内核）
-        ├── plugin.json
-        └── index.js
+├── plugins/
+│   └── echo/                   示例插件（不属于内核）
+│       ├── plugin.json
+│       └── index.js
+└── scripts/                    自检脚本（不属于内核，不参与构建）
+    ├── smoke.mjs               进程内冒烟：直接 import dist，断言单元行为
+    ├── e2e.mjs                 端到端：spawn dist/main.js 跑真实进程全链路
+    ├── e2e/mock-qq.mjs         QQ 后端替身（HTTP + 手写 RFC6455 服务端）
+    └── fixtures/crasher/       必崩插件夹具，验证 restart / quarantine
 ```
+
+自检分两层，互不替代：`smoke.mjsrap` 覆盖单元语义（去重、窗口、归一化、关闭码映射），
+`e2e.mjs` 覆盖只有真实进程才暴露的东西（token 单飞、WS 握手与心跳、事件下行、
+被动回复上行、优雅关停顺序、致命关闭码退出）。两者都通过才算验证。
 
 内核约 **1800 行**，其中真正的协议实现（`core/`）约 1200 行，插件宿主（`host/`）约 600 行。
 
@@ -112,12 +121,26 @@ interface TokenManager {
 
 ```ts
 interface QQApiClient {
-  /** 发送群文本（MVP 唯一发送路径）。 */
+  /** 发送群文本。 */
   sendGroupText(params: {
     groupOpenid: string;
     content: string;
     msgId?: string;    // 被动回复
     msgSeq?: number;   // 不传默认 1（不是 0）
+  }): Promise<SendResult>;
+
+  /**
+   * 发送单聊文本。
+   *
+   * 与群聊共用 SendMessageBody，被动窗口约束也是同一套（5 分钟 / 最多 5 次），
+   * 区别只在端点与定位字段：群聊用 groupOpenid，单聊用 userOpenid。
+   * 这两个端点在平台侧完全隔离，文件与消息都不能跨场景使用。
+   */
+  sendC2CText(params: {
+    userOpenid: string;
+    content: string;
+    msgId?: string;
+    msgSeq?: number;
   }): Promise<SendResult>;
 
   /** 原始逃生舱，仅内核内部与受信任插件使用。 */
@@ -290,6 +313,10 @@ interface ReplyHandle {
 
 这样插件的异步自由度和被动窗口的硬约束就解耦了。
 
+**群聊与单聊共用同一套句柄机制**，区别只在目标定位字段：句柄内部持有 `{ scope: 'group', groupOpenid }` 或 `{ scope: 'c2c', userOpenid }`，发送时分流到 `/v2/groups/{gid}/messages` 与 `/v2/users/{uid}/messages`。插件只知道 `handleId`，不知道目标是什么，也改不了它 —— 插件自报的 `scope` 只用于拦截明显非法的取值。
+
+**单聊的被动窗口约束与群聊一致**（同样是 5 分钟 / 最多 5 次），因此 `msg_id` 与 `msg_seq` 的维护逻辑不需要两套。
+
 ### 6.5 背压
 
 - 每个插件一个有界队列（默认 64）。满了**丢弃最旧**并记日志，不阻塞其他插件。
@@ -390,7 +417,8 @@ token     POST https://api.bot.qq.com/app/getAppAccessToken   body {appId, clien
 gateway   GET  /gateway          → wss://api.bot.qq.com/websocket/
 鉴权头     Authorization: QQBot {ACCESS_TOKEN}
 发群消息   POST /v2/groups/{group_openid}/messages
-被动回复   群聊 5 分钟 / 最多 5 次；msg_seq 不填默认 1
+发单聊消息 POST /v2/users/{user_openid}/messages
+被动回复   群聊与单聊同为 5 分钟 / 最多 5 次；msg_seq 不填默认 1
 ```
 
 域名已在 20260810 统一为 `api.bot.qq.com`。

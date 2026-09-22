@@ -16,20 +16,30 @@ import type { InboundEvent } from './normalize.js';
 
 /** 插件向内核提出的回复请求。内核负责补齐 msg_id 与 msg_seq。 */
 export interface ReplyRequest {
-  scope: 'group';
+  /** 必须与事件场景一致：群事件只能填 group，单聊事件只能填 c2c。 */
+  scope: 'group' | 'c2c';
   content: string;
 }
 
+/**
+ * 被动回复的定位目标。
+ *
+ * 群聊与单聊走的是两个不同的 OpenAPI 端点（`/v2/groups/{gid}/messages` 与
+ * `/v2/users/{uid}/messages`），所以目标必须带上 scope 才能定位到正确端点。
+ * 这是内核内部结构，msg_id 与它一起只在这一层出现，不下发插件。
+ */
+export type ReplyTarget =
+  | { scope: 'group'; groupOpenid: string }
+  | { scope: 'c2c'; userOpenid: string };
+
 /** 内核校验通过后真正发出去的指令。msg_id 只在这一层出现。 */
-export interface ReplyInstruction {
-  scope: 'group';
-  groupOpenid: string;
+export type ReplyInstruction = ReplyTarget & {
   content: string;
   /** 被动回复用的 msg_id，取自事件的 d.id。 */
   msgId: string;
   /** 内核分配的回复序号，从 1 开始递增，避免 40054005「消息被去重」。 */
   msgSeq: number;
-}
+};
 
 /** 下发给插件的 handle 视图：没有 msg_id。 */
 export interface PublicReplyHandle {
@@ -61,7 +71,8 @@ export type ReplyResolution =
 
 interface ReplyHandleState {
   id: string;
-  groupOpenid: string;
+  /** 回复目标：群聊或单聊，决定最终走哪个发送端点。 */
+  target: ReplyTarget;
   msgId: string;
   expiresAt: number;
   remaining: number;
@@ -101,14 +112,13 @@ export class ReplyRegistry {
   /**
    * 为一条事件登记被动回复句柄。
    *
-   * 返回 null 表示这条事件没有被动窗口（目前只有群消息有），调用方应把 null 作为
-   * 「本事件不允许被动回复」传给插件链接口，而不是跳过投递。
+   * 返回 null 表示这条事件没有被动窗口（只有群消息与单聊消息有），调用方应把 null
+   * 作为「本事件不允许被动回复」传给插件链接口，而不是跳过投递。
    */
   register(event: InboundEvent, now: number = Date.now()): PublicReplyHandle | null {
-    if (event.kind !== 'group') return null;
-    const groupOpenid = event.groupOpenid;
+    const target = replyTargetOf(event);
+    if (target === null) return null;
     const msgId = event.messageId;
-    if (typeof groupOpenid !== 'string' || groupOpenid === '') return null;
     if (typeof msgId !== 'string' || msgId === '') return null;
 
     this.sweep(now);
@@ -116,7 +126,7 @@ export class ReplyRegistry {
     const id = `h${++this.#counter}`;
     const state: ReplyHandleState = {
       id,
-      groupOpenid,
+      target,
       msgId,
       // 窗口 5 分钟，本地再提前 30 秒关闭，绝不贴着平台的边界发。
       expiresAt: now + Math.max(this.#windowMs - this.#windowBufferMs, 1_000),
@@ -185,13 +195,7 @@ export class ReplyRegistry {
 
     return {
       ok: true,
-      instruction: {
-        scope: 'group',
-        groupOpenid: state.groupOpenid,
-        content,
-        msgId: state.msgId,
-        msgSeq,
-      },
+      instruction: { ...state.target, content, msgId: state.msgId, msgSeq },
     };
   }
 
@@ -215,4 +219,24 @@ export class ReplyRegistry {
   get size(): number {
     return this.#handles.size;
   }
+}
+
+/**
+ * 由事件推出被动回复目标。
+ *
+ * 群聊用 group_openid、单聊用 user_openid 定位；缺少定位字段的事件没有被动窗口，
+ * 返回 null（调用方据此下发 reply=null，而不是跳过投递）。
+ */
+function replyTargetOf(event: InboundEvent): ReplyTarget | null {
+  if (event.kind === 'group') {
+    const groupOpenid = event.groupOpenid;
+    if (typeof groupOpenid !== 'string' || groupOpenid === '') return null;
+    return { scope: 'group', groupOpenid };
+  }
+  if (event.kind === 'c2c') {
+    const userOpenid = event.userOpenid;
+    if (typeof userOpenid !== 'string' || userOpenid === '') return null;
+    return { scope: 'c2c', userOpenid };
+  }
+  return null;
 }

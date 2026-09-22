@@ -501,14 +501,15 @@ export class PluginProcess {
       return null;
     }
 
-    // scope 只允许 group：MVP 的被动回复路径只有群聊。
+    // scope 只允许 group / c2c。插件自报的 scope 只是自述，真正的目标由内核持有的
+    // 句柄决定（见 pending.ts 的 resolve），这里只拦住明显非法的取值。
     const scope = record.scope;
-    if (scope !== undefined && scope !== 'group') {
+    if (scope !== undefined && scope !== 'group' && scope !== 'c2c') {
       this.#log('warn', `不支持的回复范围 ${String(scope)}，已忽略`);
       return null;
     }
 
-    return { scope: 'group', content };
+    return { scope: scope === 'c2c' ? 'c2c' : 'group', content };
   }
 
   // ------------------------------------------------------------- 崩溃策略

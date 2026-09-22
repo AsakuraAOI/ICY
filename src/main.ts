@@ -19,7 +19,7 @@ import { Dispatcher, type LogLevel } from './core/dispatch.js';
 import { FatalError } from './core/errors.js';
 import { Gateway } from './core/gateway.js';
 import { normalize } from './core/normalize.js';
-import { ReplyRegistry } from './core/pending.js';
+import { ReplyRegistry, type ReplyInstruction } from './core/pending.js';
 import { getApiBase, setApiBase } from './core/routes.js';
 import { TokenManager } from './core/token.js';
 import { BuiltinWsTransport, builtinWebSocketCtor } from './core/transport.js';
@@ -109,6 +109,29 @@ async function main(): Promise<void> {
   const replies = new ReplyRegistry();
   const deduper = new Deduper();
 
+  /**
+   * 被动回复的唯一出口。
+   *
+   * 群聊与单聊的定位字段不同，但窗口、msg_id、msg_seq 语义完全一致，所以分流只
+   * 发生在这里，其余代码（句柄校验、发送、日志）两条路径共用。
+   */
+  const sendReply = async (instruction: ReplyInstruction) => {
+    if (instruction.scope === 'c2c') {
+      return api.sendC2CText({
+        userOpenid: instruction.userOpenid,
+        content: instruction.content,
+        msgId: instruction.msgId,
+        msgSeq: instruction.msgSeq,
+      });
+    }
+    return api.sendGroupText({
+      groupOpenid: instruction.groupOpenid,
+      content: instruction.content,
+      msgId: instruction.msgId,
+      msgSeq: instruction.msgSeq,
+    });
+  };
+
   const supervisor = new Supervisor(catalog, {
     catalog,
     // username 要等 READY 才知道，这里先只给 AppID，插件也没理由需要更多。
@@ -124,11 +147,14 @@ async function main(): Promise<void> {
         return { ok: false, reason: resolution.error.reason, detail: resolution.error.detail };
       }
 
-      const { groupOpenid, content, msgId, msgSeq } = resolution.instruction;
+      const instruction = resolution.instruction;
       try {
-        const sent = await api.sendGroupText({ groupOpenid, content, msgId, msgSeq });
-        log('info', `插件 ${pluginName} 异步回复已发出 msg_id=${sent.messageId} msg_seq=${msgSeq}`);
-        return { ok: true, messageId: sent.messageId, msgSeq };
+        const sent = await sendReply(instruction);
+        log(
+          'info',
+          `插件 ${pluginName} 异步回复已发出 msg_id=${sent.messageId} msg_seq=${instruction.msgSeq}`,
+        );
+        return { ok: true, messageId: sent.messageId, msgSeq: instruction.msgSeq };
       } catch (error) {
         return { ok: false, reason: 'send_failed', detail: describe(error) };
       }
@@ -166,12 +192,7 @@ async function main(): Promise<void> {
     replies,
     log,
     send: async (instruction) => {
-      const sent = await api.sendGroupText({
-        groupOpenid: instruction.groupOpenid,
-        content: instruction.content,
-        msgId: instruction.msgId,
-        msgSeq: instruction.msgSeq,
-      });
+      const sent = await sendReply(instruction);
       log('info', `已回复 msg_id=${sent.messageId} msg_seq=${instruction.msgSeq}`);
     },
   });

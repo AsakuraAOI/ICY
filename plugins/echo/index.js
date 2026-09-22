@@ -87,7 +87,8 @@ async function onDispatch(params) {
   }
 
   const text = content === '' ? '你好，我收到了你的消息' : `echo: ${content}`;
-  return { scope: 'group', content: text };
+  // scope 必须与事件场景一致：内核会按句柄的真实目标发送，这里只是自述。
+  return { scope: event.kind === 'c2c' ? 'c2c' : 'group', content: text };
 }
 
 async function onRequest(id, method, params) {

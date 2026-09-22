@@ -57,6 +57,33 @@ export class QQApiClient {
     return { messageId: res.id, timestamp: res.timestamp };
   }
 
+  /**
+   * 发送单聊文本。
+   *
+   * 与群聊共用 SendMessageBody，被动回复窗口同样是 5 分钟 / 最多 5 次，
+   * 因此 msg_id 与 msg_seq 的用法与 sendGroupText 完全一致。
+   */
+  async sendC2CText(params: {
+    userOpenid: string;
+    content: string;
+    msgId?: string;
+    msgSeq?: number;
+  }): Promise<SendResult> {
+    const body: SendMessageBody = {
+      msg_type: 0,
+      content: params.content,
+      msg_seq: params.msgSeq ?? 1,
+    };
+    if (params.msgId !== undefined) body.msg_id = params.msgId;
+
+    const res = await this.request<SendMessageResponse>(
+      'POST',
+      routes.c2cMessages(params.userOpenid),
+      body,
+    );
+    return { messageId: res.id, timestamp: res.timestamp };
+  }
+
   /** 原始逃生舱，仅内核内部与受信任插件使用。 */
   async request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
     const token = await this.#tokens.get();

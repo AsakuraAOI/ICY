@@ -164,7 +164,30 @@ try {
       seqSecond.instruction.msgSeq === 2,
   );
 
-  check('非群消息不产生被动窗口', replies.register({ kind: 'c2c', eventId: 'x', eventType: 'C2C_MESSAGE_CREATE', seq: 1, raw: {} }) === null);
+  const c2cHandle = replies.register({
+    kind: 'c2c',
+    eventId: 'smoke-c2c-evt',
+    eventType: 'C2C_MESSAGE_CREATE',
+    seq: 2,
+    messageId: 'smoke-c2c-msg',
+    userOpenid: 'smoke-user',
+    raw: {},
+  });
+  const c2cResolution = c2cHandle === null ? null : replies.resolve(c2cHandle.handleId, 'hi');
+  check(
+    '单聊消息也产生被动窗口，并按 user_openid 定位',
+    c2cResolution !== null &&
+      c2cResolution.ok === true &&
+      c2cResolution.instruction.scope === 'c2c' &&
+      c2cResolution.instruction.userOpenid === 'smoke-user' &&
+      c2cResolution.instruction.msgSeq === 1,
+    c2cResolution === null ? 'handle 为 null' : JSON.stringify(c2cResolution),
+  );
+
+  check(
+    '生命周期事件不产生被动窗口',
+    replies.register({ kind: 'lifecycle', eventId: 'x', eventType: 'GROUP_ADD_ROBOT', seq: 1, raw: {} }) === null,
+  );
 
   // ------------------------------------------------------- 归一化与协议常量
   const sceneExt = parseSceneExt(['msg_idx=REFIDX_abc==', 'auth_token=v=1', 'novalue']);

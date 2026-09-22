@@ -8,6 +8,9 @@
  *   POST /v2/groups/{gid}/messages
  *   以及 Gateway 侧的 Hello → Identify → READY 与心跳 ACK。
  *
+ * options.closeCodeOnIdentify 为数字时，Identify 之后立刻用该关闭码关连接，
+ * 用于验证内核的致命关闭码分支。
+ *
  * WebSocket 服务端是手写帧实现：Node 只内置了客户端，而本项目不允许引入
  * 运行时依赖。只覆盖小文本帧与 ping/pong/close 这几种真实会出现的控制帧。
  */
@@ -36,6 +39,13 @@ export function encodeTextFrame(text) {
     header.writeBigUInt64BE(BigInt(len), 2);
   }
   return Buffer.concat([header, payload]);
+}
+
+/** 服务端 → 客户端：不掩码的关闭帧，携带 2 字节状态码。 */
+export function encodeCloseFrame(code) {
+  const payload = Buffer.alloc(2);
+  payload.writeUInt16BE(code, 0);
+  return Buffer.concat([Buffer.from([0x88, 0x02]), payload]);
 }
 
 /** 客户端 → 服务端：必然掩码。逐帧拆出完整文本帧与控制帧。 */
@@ -93,6 +103,7 @@ export function startMockQq(options = {}) {
     identifies: [],
     resumes: [],
     sends: [],
+    c2cSends: [],
     link: null,
     readyAt: null,
   };
@@ -118,6 +129,22 @@ export function startMockQq(options = {}) {
       }
       if (path === '/users/@me' && req.method === 'GET') {
         json(res, 200, { id: 'mock-bot', username: 'icy' });
+        return;
+      }
+      // 单聊与群聊是两个独立端点，且文件不能跨场景使用，因此分开记录。
+      const c2cSending = /^\/v2\/users\/([^/]+)\/messages$/.exec(path);
+      if (c2cSending !== null && req.method === 'POST') {
+        let body = null;
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          body = null;
+        }
+        state.c2cSends.push({ userOpenid: c2cSending[1], body });
+        json(res, 200, {
+          id: `mock-c2c-reply-${state.c2cSends.length}`,
+          timestamp: '2026-09-22T10:00:00+08:00',
+        });
         return;
       }
       const sending = /^\/v2\/groups\/([^/]+)\/messages$/.exec(path);
@@ -153,6 +180,10 @@ export function startMockQq(options = {}) {
     }
     if (frame.op === 2) {
       state.identifies.push(frame.d);
+      // 模拟致命关闭：Identify 之后服务端立刻用指定关闭码关连接（例如 4014 intents 无权限）。
+      if (typeof options.closeCodeOnIdentify === 'number') {
+        setTimeout(() => link.closeWith(options.closeCodeOnIdentify), 20);
+      }
       setTimeout(() => {
         seq += 1;
         link.send(
@@ -193,7 +224,15 @@ export function startMockQq(options = {}) {
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
 
-    const link = { buffer: Buffer.alloc(0), send: (text) => socket.write(encodeTextFrame(text)) };
+    const link = {
+      buffer: Buffer.alloc(0),
+      send: (text) => socket.write(encodeTextFrame(text)),
+      closeWith: (code) => {
+        if (socket.destroyed) return;
+        socket.write(encodeCloseFrame(code));
+        socket.end();
+      },
+    };
     state.link = link;
     sockets.add(socket);
 
@@ -225,6 +264,17 @@ export function startMockQq(options = {}) {
     if (state.link === null) throw new Error('替身后端：还没有活跃的 Gateway 连接');
     seq += 1;
     state.link.send(JSON.stringify({ id: `mock-event-${seq}`, op: 0, s: seq, t: eventType, d: data }));
+  }
+
+  /** 推一条单聊消息事件。 */
+  function pushC2C(overrides = {}) {
+    pushEvent('C2C_MESSAGE_CREATE', {
+      id: overrides.messageId ?? 'mock-c2c-message-1',
+      content: overrides.content ?? 'hi',
+      timestamp: '2026-09-22T10:00:00+08:00',
+      message_type: 0,
+      author: { id: 'mock-user-2', user_openid: overrides.userOpenid ?? 'mock-c2c-user' },
+    });
   }
 
   /** 推一条群 @ 消息事件。 */
@@ -260,6 +310,7 @@ export function startMockQq(options = {}) {
         state,
         pushEvent,
         pushGroupAt,
+        pushC2C,
         close: () => {
           state.link = null;
           for (const socket of sockets) socket.destroy();

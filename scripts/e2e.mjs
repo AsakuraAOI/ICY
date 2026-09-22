@@ -67,6 +67,9 @@ async function main() {
   child.stderr.on('data', (chunk) => logs.push(String(chunk)));
   child.on('error', (cause) => logs.push(`[spawn error] ${cause.message}`));
 
+  // 场景二（致命关闭码）会在中途创建，放在 try 之外声明，保证 finally 一定能收回它的监听端口。
+  let fatalMock = null;
+
   try {
     if (!(await waitFor('内核读到 token 并拿到 Gateway 接入点', () => mock.state.tokenCalls >= 1 && mock.state.gatewayCalls >= 1))) {
       throw new Error('前置链路未打通');
@@ -104,6 +107,17 @@ async function main() {
     const second = mock.state.sends.at(-1);
     check('第二条回复落到对应的群', second?.groupOpenid === 'mock-group-2', `group=${second?.groupOpenid}`);
 
+    // 单聊：必须走 /v2/users/{uid}/messages，而不是群端点。
+    mock.pushC2C({ content: 'hi-c2c' });
+    if (!(await waitFor('单聊消息被处理并回复', () => mock.state.c2cSends.length >= 1))) {
+      throw new Error('未观察到单聊回复');
+    }
+    const c2c = mock.state.c2cSends[0];
+    check('单聊回复走单聊端点', c2c?.userOpenid === 'mock-c2c-user', `uid=${c2c?.userOpenid}`);
+    check('单聊被动回复带 msg_id', c2c?.body?.msg_id === 'mock-c2c-message-1', `msg_id=${c2c?.body?.msg_id}`);
+    check('单聊回复内容是 echo 插件产出', c2c?.body?.content === 'echo: hi-c2c', `content=${JSON.stringify(c2c?.body?.content)}`);
+    check('单聊与群聊的发送互不污染', mock.state.sends.length === 2, `groupSends=${mock.state.sends.length}`);
+
     const exitCode = await new Promise((done) => {
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
@@ -122,12 +136,48 @@ async function main() {
     check('收到关停指令后干净退出（code 0）', exitCode === 0, `exit=${String(exitCode)}`);
     check('关停日志出现', logs.join('').includes('已关停'));
     check('关停时插件也被正常停止', logs.join('').includes('插件已停止'));
+
+    // ------------------------------------------- 场景二：致命关闭码（4014 intents 无权限）
+    // 服务端在 Identify 之后直接关连接，内核必须停下并退出，而不是无延迟重连刷日志。
+    fatalMock = await startMockQq({ heartbeatInterval: 1200, closeCodeOnIdentify: 4014 });
+    const fatalLogs = [];
+    const fatalChild = spawn(process.execPath, [resolve(root, 'dist/main.js')], {
+      cwd: root,
+      env: {
+        ...process.env,
+        QQ_APP_ID: 'mock-app-id',
+        QQ_APP_SECRET: 'mock-app-secret',
+        QQ_API_BASE: fatalMock.baseUrl,
+        PLUGIN_DIR: resolve(root, 'plugins'),
+        LOG_LEVEL: 'debug',
+      },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      windowsHide: true,
+    });
+    fatalChild.stdout.on('data', (chunk) => fatalLogs.push(String(chunk)));
+    fatalChild.stderr.on('data', (chunk) => fatalLogs.push(String(chunk)));
+
+    const fatalExit = await new Promise((done) => {
+      const timer = setTimeout(() => {
+        fatalChild.kill('SIGKILL');
+        done(null);
+      }, 20000);
+      fatalChild.once('exit', (code) => {
+        clearTimeout(timer);
+        done(code);
+      });
+    });
+    const fatalText = fatalLogs.join('');
+    check('致命关闭码后内核退出（code 1）', fatalExit === 1, `exit=${String(fatalExit)}`);
+    check('致命关闭码被识别（4014）', fatalText.includes('4014'), '日志里应出现关闭码');
+    check('致命关闭码不触发重连退避', !fatalText.includes('后重连（第'), '不应出现重连日志');
   } catch (error) {
     console.log(`FAIL ${error instanceof Error ? error.message : String(error)}`);
     failures += 1;
   } finally {
     if (child.exitCode === null) child.kill('SIGKILL');
     mock.close();
+    if (fatalMock !== null) fatalMock.close();
   }
 
   if (failures > 0) {
