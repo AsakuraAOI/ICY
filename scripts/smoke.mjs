@@ -20,6 +20,7 @@ import { closeAction } from '../dist/core/events.js';
 import { conversationKey, normalize, parseSceneExt } from '../dist/core/normalize.js';
 import { ReplyRegistry } from '../dist/core/pending.js';
 import { getApiBase, setApiBase } from '../dist/core/routes.js';
+import { SendThrottle } from '../dist/core/throttle.js';
 import { TokenManager } from '../dist/core/token.js';
 import { aggregateIntents } from '../dist/host/manifest.js';
 import { discoverPlugins, PluginCatalog } from '../dist/host/registry.js';
@@ -321,6 +322,35 @@ try {
     hangError !== null && hangElapsed < 5000,
     `elapsed=${hangElapsed}ms error=${hangError === null ? 'null' : hangError.name}`,
   );
+
+  // ---------------------------------------------------------- 主动消息频控
+  // 主动消息没有平台被动窗口兜底，闸门必须在内核里。时间戳全部注入，不依赖真实时钟。
+  const throttle = new SendThrottle({ perConversation: 2, global: 3, windowMs: 1000 });
+  const t0 = 1_000_000;
+  const t1 = throttle.take('group:a', t0);
+  const t2 = throttle.take('group:a', t0 + 10);
+  const t3 = throttle.take('group:a', t0 + 20);
+  check(
+    '同一会话超限后被拒绝并给出重试间隔',
+    t1.ok === true &&
+      t2.ok === true &&
+      t3.ok === false &&
+      t3.reason === 'conversation_limit' &&
+      t3.retryAfterMs > 0,
+    JSON.stringify(t3),
+  );
+
+  const t4 = throttle.take('group:b', t0 + 30);
+  const t5 = throttle.take('group:c', t0 + 40);
+  check(
+    '换会话仍受全局上限约束',
+    t4.ok === true && t5.ok === false && t5.reason === 'global_limit',
+    JSON.stringify(t5),
+  );
+
+  const t6 = throttle.take('group:c', t0 + 1100);
+  check('窗口滑过后重新放行', t6.ok === true, JSON.stringify(t6));
+  check('滑过窗口的会话记录被回收', throttle.conversations <= 2, `conversations=${throttle.conversations}`);
 
   // ------------------------------------------- 崩溃重启与 quarantine（P6 加固）
   const fixtureManifests = await discoverPlugins(resolve(here, 'fixtures'));

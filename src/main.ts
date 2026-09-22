@@ -20,6 +20,7 @@ import { FatalError } from './core/errors.js';
 import { Gateway } from './core/gateway.js';
 import { normalize } from './core/normalize.js';
 import { ReplyRegistry, type ReplyInstruction } from './core/pending.js';
+import { SendThrottle } from './core/throttle.js';
 import { getApiBase, setApiBase } from './core/routes.js';
 import { TokenManager } from './core/token.js';
 import { BuiltinWsTransport, builtinWebSocketCtor } from './core/transport.js';
@@ -108,6 +109,8 @@ async function main(): Promise<void> {
   const api = new QQApiClient({ tokenManager: tokens });
   const replies = new ReplyRegistry();
   const deduper = new Deduper();
+  // 主动消息的唯一闸门。被动回复由平台窗口兜底，主动消息没有，只能在这里拦。
+  const throttle = new SendThrottle();
 
   // P1：凭证是否真的可用只有 /users/@me 能证明。拿到的 username 一并带给插件，
   // 这样插件日志里显示的是机器人名字而不是一串 AppID。失败不阻断启动 —— 这条
@@ -174,6 +177,16 @@ async function main(): Promise<void> {
       }
     },
     onSend: async (pluginName, params) => {
+      // 频控必须在请求之前：放过去再处理限流错误，等于让插件的行为已经打到平台了。
+      const gate = throttle.take(`group:${params.groupOpenid}`);
+      if (!gate.ok) {
+        log(
+          'warn',
+          `插件 ${pluginName} 的主动消息被频控拒绝：${gate.reason}（上限 ${gate.limit} 条/窗口，约 ${Math.ceil(gate.retryAfterMs / 1000)} 秒后可重试）`,
+        );
+        return { ok: false, detail: `rate_limited:${gate.reason}` };
+      }
+
       try {
         const sent = await api.sendGroupText({
           groupOpenid: params.groupOpenid,
