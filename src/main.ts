@@ -20,6 +20,7 @@ import { FatalError } from './core/errors.js';
 import { Gateway } from './core/gateway.js';
 import { normalize } from './core/normalize.js';
 import { ReplyRegistry } from './core/pending.js';
+import { getApiBase, setApiBase } from './core/routes.js';
 import { TokenManager } from './core/token.js';
 import { BuiltinWsTransport, builtinWebSocketCtor } from './core/transport.js';
 import { aggregateIntents, intentsNeedingApproval } from './host/manifest.js';
@@ -70,6 +71,12 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const log = createLogger(config.logLevel);
   log('info', `icy 启动 node=${process.version} cwd=${process.cwd()}`);
+
+  // 基址覆盖必须先于任何请求：端到端自检靠它把内核指向本地替身。
+  if (config.apiBase !== '') {
+    setApiBase(config.apiBase);
+    log('info', `OpenAPI 基址覆盖为 ${getApiBase()}`);
+  }
 
   // 启动即探测，不做静默降级：没有内置 WebSocket 就直接退出，而不是连到一半才炸。
   if (builtinWebSocketCtor() === null) {
@@ -210,6 +217,18 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown(0));
   process.on('SIGTERM', () => void shutdown(0));
+  // Windows 无法向子进程投递 SIGTERM（child.kill 会退化成强杀），所以上层宿主
+  // 想走真实关停路径时，用 spawn 时的 IPC 通道发 {type:'shutdown'}。这个监听
+  // 只有在带 IPC 通道启动时才会被触发，不影响普通前台运行。
+  process.on('message', (message: unknown) => {
+    if (
+      message !== null &&
+      typeof message === 'object' &&
+      (message as { type?: unknown }).type === 'shutdown'
+    ) {
+      void shutdown(0);
+    }
+  });
 
   await gateway.start();
   log('info', '已连接 Gateway，等待 Hello → Identify → READY');

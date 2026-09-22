@@ -13,6 +13,8 @@ export interface AppConfig {
   readonly appSecret: Secret;
   logLevel: LogLevel;
   pluginDir: string;
+  /** OpenAPI 基址覆盖（QQ_API_BASE）。空串表示用 core/routes.ts 的默认值。 */
+  apiBase: string;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -69,5 +71,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     appSecret: new Secret(appSecret),
     logLevel,
     pluginDir: env.PLUGIN_DIR?.trim() ?? './plugins',
+    apiBase: env.QQ_API_BASE?.trim() ?? '',
   };
 }
