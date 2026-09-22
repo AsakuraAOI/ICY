@@ -135,8 +135,6 @@ export class Dispatcher {
   }
 
   async #handle(event: InboundEvent): Promise<void> {
-    const handle = this.#replies.register(event);
-
     const candidates = this.#plugins
       .filter((plugin) => plugin.events.includes(event.eventType))
       .sort((a, b) => a.priority - b.priority);
@@ -145,6 +143,11 @@ export class Dispatcher {
       this.#log('debug', `事件 ${event.eventType} 没有插件订阅`);
       return;
     }
+
+    // 只为「真的会有人处理」的事件登记被动窗口。没有订阅者还登记，这些 handle 会一直
+    // 堆到窗口关闭：上限 5000 一到就淘汰最旧的，而被淘汰的可能正是别的会话里仍在等待
+    // 异步 host/reply 的 handle —— 插件拿到 unknown_handle，原因却和自己的行为无关。
+    const handle = this.#replies.register(event);
 
     for (const plugin of candidates) {
       const request = await this.#deliver(plugin, event, handle);

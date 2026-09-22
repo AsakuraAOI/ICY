@@ -331,7 +331,8 @@ interface ReplyHandle {
 - 核心把 `ReplyHandle` 随 dispatch 一起给插件（只给 `id` 和 `expiresAt`，**不给 msg_id**）。
 - 插件用 `host/reply` 时，核心校验 `expiresAt` 和 `remaining`，并且**由核心分配 `msg_seq`**。
 - 窗口剩余不足 60s 时核心主动拒绝并返回结构化错误，而不是让请求打到 OpenAPI 拿 `40034005`。
-- 事件处理完成后核心回收 handle。
+- **handle 活到窗口关闭，不在单次事件处理结束时回收。** 异步回复路径（`dispatch` 返回 `null`，稍后用 `host/reply`）依赖它，提前回收会把这条自由度掐死。回收统一交给 `sweep()`。
+- **只为有订阅者的事件登记 handle。** 没有插件订阅的消息事件若照样登记，句柄会一直堆到窗口关闭；句柄上限（默认 5000）一到就淘汰最旧的，而被淘汰的可能正是别的会话里仍在等待 `host/reply` 的句柄 —— 插件拿到 `unknown_handle`，原因却和它自己的行为无关。
 
 这样插件的异步自由度和被动窗口的硬约束就解耦了。
 

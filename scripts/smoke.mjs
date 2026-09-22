@@ -143,6 +143,25 @@ try {
   await dispatcher.drain();
   check('未订阅事件不产生回复', delivered.length === before);
 
+  // 没有订阅者的消息类事件不该占用被动窗口句柄。句柄有上限（默认 5000），堆满后会淘汰
+  // 最旧的 —— 被淘汰的可能正是别的会话里仍在等待 host/reply 的句柄，插件拿到
+  // unknown_handle，原因却和自己的行为无关。echo 只订阅了 GROUP_AT_MESSAGE_CREATE，
+  // 所以 GROUP_MESSAGE_CREATE（全量模式）正好是「有窗口但没人处理」的那种事件。
+  const handlesBefore = replies.size;
+  dispatcher.submit(
+    groupEvent({
+      eventId: 'smoke-evt-4',
+      messageId: 'smoke-msg-4',
+      eventType: 'GROUP_MESSAGE_CREATE',
+    }),
+  );
+  await dispatcher.drain();
+  check(
+    '无订阅者的消息事件不登记被动窗口',
+    replies.size === handlesBefore,
+    `size=${replies.size}`,
+  );
+
   // ----------------------------------------------------------------- 去重
   const deduper = new Deduper();
   const duplicate = groupEvent({ eventId: 'smoke-evt-dup', messageId: 'smoke-msg-dup' });
