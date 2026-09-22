@@ -22,12 +22,15 @@ import { conversationKey, normalize, parseSceneExt } from '../dist/core/normaliz
 import { ReplyRegistry } from '../dist/core/pending.js';
 import { getApiBase, setApiBase } from '../dist/core/routes.js';
 import { ApiError, describeSendFailure } from '../dist/core/errors.js';
+import { Gateway } from '../dist/core/gateway.js';
 import { DEFAULT_THROTTLE_LIMITS, SendThrottle } from '../dist/core/throttle.js';
 import { ConfigError, loadConfig } from '../dist/config.js';
 import { TokenManager } from '../dist/core/token.js';
 import { aggregateIntents } from '../dist/host/manifest.js';
 import { discoverPlugins, PluginCatalog } from '../dist/host/registry.js';
 import { Supervisor } from '../dist/host/supervisor.js';
+
+import { startMockQq } from './e2e/mock-qq.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pluginDir = resolve(here, '..', 'plugins');
@@ -728,6 +731,48 @@ try {
   // ------------------------------------------------------------------ 关停
   await supervisor.stopAll();
   check('echo 已停止', supervisor.stateOf('echo') === 'stopped', `state=${supervisor.stateOf('echo')}`);
+
+  // --------------------------------- 重连打满上限必须致命上报，而不是让进程悬挂
+  // 打满上限时连接已经没了、插件还在跑：进程既不收事件也不退出，从外面看像正常。
+  // 用假 transport 驱动状态机，不需要真连 WebSocket；maxReconnects=0 表示第一次
+  // 断开就判定打满，测试不必等真实的退避阶梯（1s 起步，跑满要几分钟）。
+  const apiBaseBeforeGateway = getApiBase();
+  const reconnectMock = await startMockQq({});
+  setApiBase(reconnectMock.baseUrl);
+
+  const fakeTransport = {
+    closeHandlers: [],
+    connect: async () => {},
+    send: () => {},
+    close: () => {},
+    onMessage: () => {},
+    onClose(handler) {
+      this.closeHandlers.push(handler);
+    },
+  };
+
+  const fatalErrors = [];
+  const reconnectGateway = new Gateway(fakeTransport, {
+    tokenManager: new TokenManager({ appId: 'x', clientSecret: 'y' }),
+    intents: ['GROUP_AND_C2C_EVENT'],
+    maxReconnects: 0,
+    onDispatch: () => {},
+    onFatal: (error) => fatalErrors.push(error),
+  });
+  await reconnectGateway.start();
+  // 4008「发送过快」的策略是退避重连，但上限为 0，必须立刻转成致命错误。
+  for (const handler of fakeTransport.closeHandlers) handler(4008, 'mock close');
+  await delay(50);
+
+  check(
+    '重连打满上限时上报致命错误（否则进程既不收事件也不退出）',
+    fatalErrors.length === 1 && fatalErrors[0].name === 'FatalError',
+    `errors=${fatalErrors.map((error) => error.name).join(',') || '（空）'}`,
+  );
+
+  reconnectGateway.stop();
+  setApiBase(apiBaseBeforeGateway);
+  reconnectMock.close();
 } catch (error) {
   failures += 1;
   process.stderr.write(`\nSMOKE 抛异常：${error && error.stack ? error.stack : String(error)}\n`);

@@ -235,9 +235,14 @@ export class Gateway {
     if (this.#stopping) return;
     const max = this.#options.maxReconnects ?? 10;
     if (this.#reconnectAttempts >= max) {
+      // 打满上限不能只是「安静地停下」：此时连接已经没了、插件还在跑，进程既不收事件
+      // 也不退出，从外面看像是正常运行 —— 比直接崩溃更难发现。所以必须走致命路径，
+      // 由 main.ts 决定退出码并回收插件进程。
       this.#stopping = true;
-      this.#log('error', `重连已达上限 ${max} 次，放弃`);
-      this.#transport.close();
+      this.#clearHeartbeat();
+      const fatal = new FatalError(`Gateway 重连已达上限 ${max} 次，放弃`);
+      this.#log('error', fatal.message);
+      this.#options.onFatal?.(fatal);
       return;
     }
     // noUncheckedIndexedAccess 下下标取值可能是 undefined，兜底成阶梯上限。
