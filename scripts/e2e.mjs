@@ -174,6 +174,35 @@ async function main() {
       `groupSends=${mock.state.sends.length}`,
     );
 
+    // 撤回（host/recall）：插件先发一条，再用返回的 messageId 撤掉它。
+    // 端点必须是 DELETE /v2/groups/{gid}/messages/{mid}，且不能带响应体解析。
+    mock.pushGroupAt({ messageId: 'mock-message-recall', content: 'recall' });
+    if (!(await waitFor('撤回请求已发出', () => mock.state.recalls.length >= 1))) {
+      throw new Error('未观察到撤回请求');
+    }
+    const recall = mock.state.recalls[0];
+    check(
+      '撤回走群聊 DELETE 端点',
+      recall?.scope === 'group' && recall?.openid === 'mock-group-1',
+      JSON.stringify(recall),
+    );
+    check(
+      '撤回的是刚发出的那条消息',
+      typeof recall?.messageId === 'string' && recall.messageId.startsWith('mock-reply-'),
+      `messageId=${String(recall?.messageId)}`,
+    );
+
+    // 撤回失败必须以稳定 reason 到达插件：2 分钟超时（40064004）是最常见的一种。
+    mock.state.failRecallErrCode = 40064004;
+    mock.pushGroupAt({ messageId: 'mock-message-recall-2', content: 'recall' });
+    await waitFor('失败撤回已被处理', () => logs.join('').includes('recall_expired'));
+    check(
+      '撤回超时被翻译成 recall_expired',
+      logs.join('').includes('recall_expired'),
+      '内核日志里应出现稳定 reason',
+    );
+    mock.state.failRecallErrCode = null;
+
     // 平台侧失败必须以稳定 reason 到达插件，而不是让插件去解析 err_code。
     // 40034005「msg_id 已过期」是 AI 类插件最容易撞的一种，内核必须能识别。
     mock.state.failSendContent = { content: 'echo: failme', errCode: 40034005 };

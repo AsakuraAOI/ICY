@@ -103,12 +103,29 @@ callHost('host/send', { scope: 'c2c', userOpenid: '...', text: '...' });
 
 被动回复有平台窗口兜底，主动消息没有 —— 一个写错的插件可以在几秒内把机器人打到限流甚至封禁。所以这个闸门在内核里，插件绕不过去，也别指望在插件侧自己限流。
 
+## 5.5 撤回消息
+
+```ts
+callHost('host/recall', { scope: 'group', groupOpenid: '...', messageId: '...' });
+callHost('host/recall', { scope: 'c2c', userOpenid: '...', messageId: '...' });
+```
+
+需要声明 `message.recall`。`messageId` 取自 `host/reply` / `host/send` 的成功返回 —— 插件本来就持有它，所以这里不再包一层句柄。**这也意味着插件只能撤回自己发过的消息**：别人的消息 ID 它本来就拿不到，除非是群管理员要撤回成员消息（那种场景下 ID 来自群事件的 `d.id`）。
+
+两道硬约束：
+
+- **发送超过 2 分钟不可撤回**，比被动回复窗口（5 分钟）更紧配额。
+- **权限分两档**：机器人是群管理员时可撤回自己的消息与普通成员的消息；普通成员身份下只能撤回自己发送的。越权会被平台拒绝（`no_permission`），内核不替插件预判这一档。
+
+成功时平台返回 HTTP 200 且**无响应体**，所以结果里没有 `messageId` 回执。失败与 `host/reply` 一样是结构化结果。
+
 ## 6. 能力
 
 | 能力 | 允许的调用 |
 |---|---|
 | `message.reply` | `host/reply` |
 | `message.send` | `host/send` |
+| `message.recall` | `host/recall` |
 
 未声明的能力会被内核以 JSON-RPC error `-32000`（`HOST_REJECTED`）拒绝，不会打到 OpenAPI。
 
@@ -141,6 +158,10 @@ callHost('host/send', { scope: 'c2c', userOpenid: '...', text: '...' });
 | `not_group_member` / `muted` | 机器人不在群 / 被禁言 | 放弃 |
 | `auth_failed` | 凭证失效（内核会自动重取一次） | 可重试 |
 | `network` | 网络或超时 | 可退避重试 |
+| `recall_expired` | 撤回超时（发送超过 2 分钟） | 放弃 |
+| `no_permission` | 无权撤回该消息 | 用法错误，检查机器人是否群管理员 |
+| `invalid_message_id` | 消息 ID 或 openid 无效 | 检查参数 |
+| `retryable` | 平台建议稍后重试（撤回） | 稍后重试 |
 | `unknown` | 未分类 | 记日志 |
 
 **不要解析平台的 `err_code`，也不要依赖 `message` 文案** —— 两者都可能随时变。按上表的 `reason` 分支即可。

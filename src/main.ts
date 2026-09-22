@@ -16,7 +16,7 @@ import { ConfigError, loadConfig } from './config.js';
 import { QQApiClient } from './core/api.js';
 import { Deduper, dedupeKey } from './core/dedupe.js';
 import { Dispatcher, type LogLevel } from './core/dispatch.js';
-import { FatalError, describeSendFailure } from './core/errors.js';
+import { FatalError, describeRecallFailure, describeSendFailure } from './core/errors.js';
 import { Gateway } from './core/gateway.js';
 import { normalize } from './core/normalize.js';
 import { ReplyRegistry, type ReplyInstruction } from './core/pending.js';
@@ -207,6 +207,27 @@ async function main(): Promise<void> {
         const reason = describeSendFailure(error);
         log('warn', `插件 ${pluginName} 的主动消息发送失败：${reason} — ${describe(error)}`);
         return { ok: false, detail: `${reason}: ${describe(error)}` };
+      }
+    },
+    onRecall: async (pluginName, params) => {
+      try {
+        if (params.scope === 'c2c') {
+          await api.recallC2CMessage({
+            userOpenid: params.userOpenid,
+            messageId: params.messageId,
+          });
+        } else {
+          await api.recallGroupMessage({
+            groupOpenid: params.groupOpenid,
+            messageId: params.messageId,
+          });
+        }
+        log('info', `插件 ${pluginName} 撤回成功 scope=${params.scope} msg_id=${params.messageId}`);
+        return { ok: true };
+      } catch (error) {
+        const reason = describeRecallFailure(error);
+        log('warn', `插件 ${pluginName} 撤回失败：${reason} — ${describe(error)}`);
+        return { ok: false, reason, detail: describe(error) };
       }
     },
     onQuarantine: (pluginName, reason) => {

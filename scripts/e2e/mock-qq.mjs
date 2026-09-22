@@ -106,13 +106,29 @@ export function startMockQq(options = {}) {
     resumes: [],
     sends: [],
     c2cSends: [],
+    /** 撤回请求（DELETE），用于验证 host/recall 的落地端点。 */
+    recalls: [],
     /** 内容匹配时故意回 err_code，用于验证内核把平台错误翻译成稳定 reason。可运行中改写。 */
     failSendContent: null,
+    /** 数字时所有撤回请求都返回该 err_code，用于验证撤回错误的稳定 reason。可运行中改写。 */
+    failRecallErrCode: null,
     link: null,
     readyAt: null,
   };
 
   const sockets = new Set();
+
+  /** 记录撤回请求并按 state 决定成功还是回错误码。 */
+  function finishRecall(res, entry) {
+    state.recalls.push(entry);
+    const failCode = state.failRecallErrCode;
+    if (typeof failCode === 'number') {
+      json(res, 200, { err_code: failCode, message: 'mock 拒绝撤回' });
+      return;
+    }
+    res.writeHead(200);
+    res.end();
+  }
 
   const server = createServer((req, res) => {
     const chunks = [];
@@ -140,6 +156,17 @@ export function startMockQq(options = {}) {
         json(res, 200, { id: 'mock-bot', username: 'icy' });
         return;
       }
+      // 撤回：成功时 HTTP 200 且**无响应体**（与文档一致），所以这里不写 body。
+      // 群聊与单聊仍是两个独立端点。
+      const recallGroup = /^\/v2\/groups\/([^/]+)\/messages\/([^/]+)$/.exec(path);
+      if (recallGroup !== null && req.method === 'DELETE') {
+        return finishRecall(res, { scope: 'group', openid: recallGroup[1], messageId: recallGroup[2] });
+      }
+      const recallC2C = /^\/v2\/users\/([^/]+)\/messages\/([^/]+)$/.exec(path);
+      if (recallC2C !== null && req.method === 'DELETE') {
+        return finishRecall(res, { scope: 'c2c', openid: recallC2C[1], messageId: recallC2C[2] });
+      }
+
       // 单聊与群聊是两个独立端点，且文件不能跨场景使用，因此分开记录。
       const c2cSending = /^\/v2\/users\/([^/]+)\/messages$/.exec(path);
       if (c2cSending !== null && req.method === 'POST') {

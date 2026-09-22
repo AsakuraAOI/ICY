@@ -21,7 +21,7 @@ import { closeAction } from '../dist/core/events.js';
 import { conversationKey, normalize, parseSceneExt } from '../dist/core/normalize.js';
 import { ReplyRegistry } from '../dist/core/pending.js';
 import { getApiBase, setApiBase } from '../dist/core/routes.js';
-import { ApiError, describeSendFailure } from '../dist/core/errors.js';
+import { ApiError, describeRecallFailure, describeSendFailure } from '../dist/core/errors.js';
 import { Gateway } from '../dist/core/gateway.js';
 import { DEFAULT_THROTTLE_LIMITS, SendThrottle } from '../dist/core/throttle.js';
 import { ConfigError, loadConfig } from '../dist/config.js';
@@ -101,6 +101,7 @@ try {
       return { ok: true, messageId: 'smoke-async', msgSeq: resolution.instruction.msgSeq };
     },
     onSend: async () => ({ ok: false, detail: '冒烟自检不使用主动消息' }),
+    onRecall: async () => ({ ok: false, reason: 'unused', detail: '冒烟自检不使用撤回' }),
   });
 
   await supervisor.startAll();
@@ -461,6 +462,22 @@ try {
     apiError(40034005).message,
   );
 
+  // 撤回窗口只有 2 分钟，比被动回复的 5 分钟更紧；权限还分两档（群管理员 / 普通成员）。
+  // 「过期了」和「没权限」必须分开：前者重试无用，后者说明用法错了。
+  check(
+    '撤回失败各有稳定 reason（过期与无权限不混为一谈）',
+    describeRecallFailure(apiError(40064004)) === 'recall_expired' &&
+      describeRecallFailure(apiError(40062003)) === 'no_permission' &&
+      describeRecallFailure(apiError(40061001)) === 'invalid_message_id' &&
+      describeRecallFailure(apiError(40061002)) === 'invalid_message_id' &&
+      describeRecallFailure(apiError(306009)) === 'invalid_message_id' &&
+      describeRecallFailure(apiError(50065001)) === 'retryable' &&
+      describeRecallFailure(apiError(11241)) === 'auth_failed' &&
+      describeRecallFailure(apiError(999999)) === 'unknown' &&
+      describeRecallFailure(new Error('boom')) === 'unknown',
+    `expired=${describeRecallFailure(apiError(40064004))} noPerm=${describeRecallFailure(apiError(40062003))}`,
+  );
+
   // ---------------------------------------------------------- 主动消息频控
   // 主动消息没有平台被动窗口兜底，闸门必须在内核里。时间戳全部注入，不依赖真实时钟。
   // 额度必须能配置，且非法值直接拒绝 —— 静默降级会让人以为限流生效了，实际没有。
@@ -732,6 +749,7 @@ try {
     log: (level, message) => logs.push(`[crasher] ${level} ${message}`),
     onReply: async () => ({ ok: false, reason: 'unused', detail: '夹具不回消息' }),
     onSend: async () => ({ ok: false, detail: '夹具不用主动消息' }),
+    onRecall: async () => ({ ok: false, reason: 'unused', detail: '夹具不撤回消息' }),
   });
 
   await crashSupervisor.startAll();
@@ -763,6 +781,7 @@ try {
     log: (level, message) => logs.push(`[zombie] ${level} ${message}`),
     onReply: async () => ({ ok: false, reason: 'unused', detail: '夹具不回消息' }),
     onSend: async () => ({ ok: false, detail: '夹具不用主动消息' }),
+    onRecall: async () => ({ ok: false, reason: 'unused', detail: '夹具不撤回消息' }),
     // 压缩时间窗：默认 30s 间隔 / 15s 超时，跑一次要一分钟以上。
     timeouts: { healthCheckMs: 300, callMs: 800, terminateGraceMs: 500, shutdownMs: 500 },
   });

@@ -18,7 +18,7 @@ export type { IntentName, InboundEvent, PublicReplyHandle, ReplyRequest };
 export const IPC_PROTOCOL_VERSION = 1;
 
 /** 插件可声明的能力。没声明的能力，调用即被内核拒绝。 */
-export const CAPABILITIES = ['message.reply', 'message.send'] as const;
+export const CAPABILITIES = ['message.reply', 'message.send', 'message.recall'] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /**
@@ -43,6 +43,7 @@ export type HostMethodName = (typeof HostMethod)[keyof typeof HostMethod];
 export const PluginMethod = {
   REPLY: 'host/reply',
   SEND: 'host/send',
+  RECALL: 'host/recall',
   LOG: 'host/log',
   READY: 'plugin/ready',
 } as const;
@@ -104,6 +105,24 @@ export type HostSendParams =
 export interface HostSendResult {
   ok: boolean;
   messageId?: string;
+  detail?: string;
+}
+
+/**
+ * host/recall 的参数：撤回本机器人发送过的消息。
+ *
+ * `messageId` 直接来自 `host/reply` / `host/send` 的成功返回 —— 插件本来就持有它，
+ * 所以这里不需要再包一层句柄。这也意味着插件只能撤回自己发过的消息（它拿不到别人的
+ * 消息 ID，除非收到的群事件里带着 d.id，那属于管理员撤回场景）。
+ */
+export type HostRecallParams =
+  | { scope: 'group'; groupOpenid: string; messageId: string }
+  | { scope: 'c2c'; userOpenid: string; messageId: string };
+
+/** host/recall 的返回。失败是结构化结果，不是 JSON-RPC error。 */
+export interface HostRecallResult {
+  ok: boolean;
+  reason?: string;
   detail?: string;
 }
 

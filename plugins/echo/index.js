@@ -66,6 +66,17 @@ function callHost(method, params, timeoutMs = 10_000) {
   });
 }
 
+/** 由事件推出主动消息 / 撤回的目标。缺少定位字段时返回 null。 */
+function targetOf(event) {
+  if (event.kind === 'c2c' && typeof event.userOpenid === 'string' && event.userOpenid !== '') {
+    return { target: { scope: 'c2c', userOpenid: event.userOpenid }, id: event.userOpenid };
+  }
+  if (typeof event.groupOpenid === 'string' && event.groupOpenid !== '') {
+    return { target: { scope: 'group', groupOpenid: event.groupOpenid }, id: event.groupOpenid };
+  }
+  return null;
+}
+
 async function onDispatch(params) {
   const event = params && params.event;
   const handle = params && params.reply ? params.reply : null;
@@ -79,19 +90,37 @@ async function onDispatch(params) {
 
   // 主动消息演示：走 host/send，不占用被动窗口，受内核频控。
   if (content === 'send') {
-    const target =
-      event.kind === 'c2c'
-        ? { scope: 'c2c', userOpenid: event.userOpenid }
-        : { scope: 'group', groupOpenid: event.groupOpenid };
-    const targetId = target.scope === 'c2c' ? target.userOpenid : target.groupOpenid;
-    if (typeof targetId !== 'string' || targetId === '') {
+    const where = targetOf(event);
+    if (where === null) {
       log('事件缺少主动消息目标，忽略');
       return null;
     }
     setTimeout(() => {
-      callHost('host/send', { ...target, text: `${replyPrefix}: 主动消息` })
+      callHost('host/send', { ...where.target, text: `${replyPrefix}: 主动消息` })
         .then((result) => log(`host/send => ${JSON.stringify(result)}`))
         .catch((error) => log(`host/send 失败：${error.message}`));
+    }, 100);
+    return null;
+  }
+
+  // 撤回演示：先主动发一条，再用返回的 messageId 撤回它。
+  // 插件只能撤回自己发过的消息 —— 别人的消息 ID 它本来就拿不到。
+  if (content === 'recall') {
+    const where = targetOf(event);
+    if (where === null) {
+      log('事件缺少撤回目标，忽略');
+      return null;
+    }
+    setTimeout(() => {
+      callHost('host/send', { ...where.target, text: `${replyPrefix}: 待撤回` })
+        .then((sent) => {
+          if (!sent || sent.ok !== true || typeof sent.messageId !== 'string') {
+            throw new Error(`host/send 未返回 messageId：${JSON.stringify(sent)}`);
+          }
+          return callHost('host/recall', { ...where.target, messageId: sent.messageId });
+        })
+        .then((result) => log(`host/recall => ${JSON.stringify(result)}`))
+        .catch((error) => log(`撤回演示失败：${error.message}`));
     }, 100);
     return null;
   }

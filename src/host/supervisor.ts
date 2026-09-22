@@ -30,6 +30,8 @@ import {
   RpcErrorCode,
   type DispatchParams,
   type HostLogParams,
+  type HostRecallParams,
+  type HostRecallResult,
   type HostReplyParams,
   type HostReplyResult,
   type HostSendParams,
@@ -96,6 +98,8 @@ export interface SupervisorOptions {
   onReply: (pluginName: string, params: HostReplyParams) => Promise<HostReplyResult>;
   /** host/send 的落地：主动消息，受频控。 */
   onSend: (pluginName: string, params: HostSendParams) => Promise<HostSendResult>;
+  /** host/recall 的落地：撤回消息。 */
+  onRecall: (pluginName: string, params: HostRecallParams) => Promise<HostRecallResult>;
   /** 插件被 quarantine 的通知（不再自动拉起）。 */
   onQuarantine?: (pluginName: string, reason: string) => void;
   /** 覆盖子进程可执行文件，默认 process.execPath。测试用。 */
@@ -409,6 +413,8 @@ export class PluginProcess {
         return this.#onHostReply(params);
       case PluginMethod.SEND:
         return this.#onHostSend(params);
+      case PluginMethod.RECALL:
+        return this.#onHostRecall(params);
       default:
         return Promise.reject(
           new HostRejectionError(
@@ -520,6 +526,46 @@ export class PluginProcess {
 
     throw new HostRejectionError(
       'host/send 的 scope 只支持 "group" 或 "c2c"',
+      RpcErrorCode.INVALID_PARAMS,
+    );
+  }
+
+  async #onHostRecall(params: unknown): Promise<HostRecallResult> {
+    if (!this.#options.catalog.can(this.#manifest.name, 'message.recall')) {
+      throw new HostRejectionError(`插件 ${this.#manifest.name} 未声明 message.recall 能力`);
+    }
+
+    const record = readRecord(params);
+    const scope = record?.scope;
+    const messageId = record?.messageId;
+    if (typeof messageId !== 'string' || messageId === '') {
+      throw new HostRejectionError('host/recall 需要非空的 messageId', RpcErrorCode.INVALID_PARAMS);
+    }
+
+    if (scope === 'group') {
+      const groupOpenid = record?.groupOpenid;
+      if (typeof groupOpenid !== 'string' || groupOpenid === '') {
+        throw new HostRejectionError(
+          'host/recall 的群聊参数需要 { scope: "group", groupOpenid: string, messageId: string }',
+          RpcErrorCode.INVALID_PARAMS,
+        );
+      }
+      return this.#options.onRecall(this.#manifest.name, { scope: 'group', groupOpenid, messageId });
+    }
+
+    if (scope === 'c2c') {
+      const userOpenid = record?.userOpenid;
+      if (typeof userOpenid !== 'string' || userOpenid === '') {
+        throw new HostRejectionError(
+          'host/recall 的单聊参数需要 { scope: "c2c", userOpenid: string, messageId: string }',
+          RpcErrorCode.INVALID_PARAMS,
+        );
+      }
+      return this.#options.onRecall(this.#manifest.name, { scope: 'c2c', userOpenid, messageId });
+    }
+
+    throw new HostRejectionError(
+      'host/recall 的 scope 只支持 "group" 或 "c2c"',
       RpcErrorCode.INVALID_PARAMS,
     );
   }

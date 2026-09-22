@@ -158,6 +158,44 @@ export function describeSendFailure(error: unknown): SendFailureReason {
   return 'unknown';
 }
 
+/**
+ * 撤回失败对插件可见的稳定原因。
+ *
+ * 撤回窗口只有 2 分钟（比被动回复的 5 分钟更紧），且权限规则分两档：群管理员可撤回
+ * 自己的消息与普通成员的消息，普通成员只能撤回自己发的。插件必须能区分「过期了」
+ * 和「没权限」，前者重试无用，后者说明用法错了。
+ */
+export type RecallFailureReason =
+  | 'recall_expired'
+  | 'no_permission'
+  | 'invalid_message_id'
+  | 'retryable'
+  | 'auth_failed'
+  | 'network'
+  | 'unknown';
+
+/** 把撤回路径的失败翻译成稳定 reason。依据官方错误码表，不依赖 message 文案。 */
+export function describeRecallFailure(error: unknown): RecallFailureReason {
+  if (error instanceof ApiError) {
+    switch (error.errCode) {
+      case 40064004: // 已超出消息撤回时限
+        return 'recall_expired';
+      case 40062003: // 无操作权限
+        return 'no_permission';
+      case 40061001: // 请求参数无效
+      case 40061002: // msgid 无效
+      case 306009: // 用户 openid 无效
+        return 'invalid_message_id';
+      case 50065001: // 消息撤回失败，请稍后重试
+        return 'retryable';
+      default:
+        return isAuthFailure(error) ? 'auth_failed' : 'unknown';
+    }
+  }
+  if (error instanceof TransportError) return 'network';
+  return 'unknown';
+}
+
 /** 网络层失败：fetch 抛错、超时、响应不是合法 JSON。 */
 export class TransportError extends Error {
   constructor(message: string, options?: ErrorOptions) {

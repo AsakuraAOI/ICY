@@ -98,6 +98,29 @@ export class QQApiClient {
     return self;
   }
 
+  /**
+   * 撤回群消息。
+   *
+   * 平台限制：发送超过 2 分钟不可撤回。成功返回 HTTP 200 且**无响应体**，所以这里
+   * 返回 void —— 调用方不能假设拿得到任何回执。
+   *
+   * 权限分两档：机器人是群管理员时可撤回自己的消息与普通成员的消息；普通成员身份
+   * 下只能撤回自己发送的。内核不替插件判断这一档，越权会被平台拒绝（40062003）。
+   */
+  async recallGroupMessage(params: { groupOpenid: string; messageId: string }): Promise<void> {
+    await this.request<unknown>(
+      'DELETE',
+      routes.groupMessage(params.groupOpenid, params.messageId),
+    );
+  }
+
+  /**
+   * 撤回单聊消息。只能撤回机器人自己发送给该用户的消息，同样受 2 分钟限制。
+   */
+  async recallC2CMessage(params: { userOpenid: string; messageId: string }): Promise<void> {
+    await this.request<unknown>('DELETE', routes.c2cMessage(params.userOpenid, params.messageId));
+  }
+
   /** 原始逃生舱，仅内核内部与受信任插件使用。 */
   async request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
     const token = await this.#tokens.get();

@@ -146,6 +146,18 @@ interface QQApiClient {
     msgSeq?: number;
   }): Promise<SendResult>;
 
+  /**
+   * 撤回群消息。发送超过 2 分钟不可撤回。
+   *
+   * 成功返回 HTTP 200 且**无响应体**，所以返回 void —— 调用方不能假设拿得到回执。
+   * 权限分两档：机器人是群管理员时可撤回自己的消息与普通成员的消息；普通成员身份下
+   * 只能撤回自己发送的。内核不替插件判断这一档，越权会被平台拒绝（40062003）。
+   */
+  recallGroupMessage(params: { groupOpenid: string; messageId: string }): Promise<void>;
+
+  /** 撤回单聊消息。只能撤回机器人自己发出的，同样受 2 分钟限制。 */
+  recallC2CMessage(params: { userOpenid: string; messageId: string }): Promise<void>;
+
   /** 原始逃生舱，仅内核内部与受信任插件使用。 */
   request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T>;
 }
@@ -276,6 +288,7 @@ interface InboundEvent {
 |---|---|---|---|
 | `host/reply` | request | `{ handleId, text }` | 用预登记句柄回复，核心校验窗口与次数 |
 | `host/send` | request | `{ scope: 'group', groupOpenid, text }` 或 `{ scope: 'c2c', userOpenid, text }` | 主动消息，需 `message.send` 能力；**由内核侧频控**，被拒时返回 `rate_limited:*` |
+| `host/recall` | request | `{ scope: 'group', groupOpenid, messageId }` 或 `{ scope: 'c2c', userOpenid, messageId }` | 撤回消息，需 `message.recall` 能力；`messageId` 来自 `host/reply` / `host/send` 的成功返回 |
 | `host/log` | notification | `{ level, message, fields? }` | 日志（也允许直接写 stderr） |
 | `plugin/ready` | notification | `{ name, version }` | 就绪信号 |
 
@@ -446,6 +459,9 @@ gateway   GET  /gateway          → wss://api.bot.qq.com/websocket/
 发群消息   POST /v2/groups/{group_openid}/messages
 发单聊消息 POST /v2/users/{user_openid}/messages
 被动回复   群聊与单聊同为 5 分钟 / 最多 5 次；msg_seq 不填默认 1
+撤回群消息 DELETE /v2/groups/{group_openid}/messages/{message_id}
+撤回单聊   DELETE /v2/users/{user_openid}/messages/{message_id}
+撤回窗口   发送超过 2 分钟不可撤回；成功 HTTP 200 且无响应体
 ```
 
 域名已在 20260810 统一为 `api.bot.qq.com`。
