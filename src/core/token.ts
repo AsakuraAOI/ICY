@@ -11,7 +11,12 @@
  * token 只存在于内核进程内，不随事件下发给插件。
  */
 
-import { TokenError, TransportError } from './errors.js';
+import {
+  TokenError,
+  TransportError,
+  isTokenErrorRetryable,
+  tokenErrorHint,
+} from './errors.js';
 import { routes } from './routes.js';
 
 /** token 接口的原始响应。expires_in 文档标注为 number，但示例给的是字符串 "7200"。 */
@@ -29,6 +34,8 @@ export interface TokenManagerOptions {
   refreshAheadSeconds?: number;
   /** 单次请求超时（毫秒），默认 15000。没有它，网络卡住会静默挂死启动。 */
   timeoutMs?: number;
+  /** 最多尝试几次（只有可重试的失败才消耗次数），默认 3。 */
+  maxAttempts?: number;
 }
 
 interface TokenState {
@@ -42,6 +49,7 @@ export class TokenManager {
   readonly #clientSecret: string;
   readonly #refreshAheadMs: number;
   readonly #timeoutMs: number;
+  readonly #maxAttempts: number;
   #state: TokenState | null = null;
   #inflight: Promise<string> | null = null;
 
@@ -50,6 +58,7 @@ export class TokenManager {
     this.#clientSecret = options.clientSecret;
     this.#refreshAheadMs = (options.refreshAheadSeconds ?? 300) * 1000;
     this.#timeoutMs = options.timeoutMs ?? 15_000;
+    this.#maxAttempts = Math.max(options.maxAttempts ?? 3, 1);
   }
 
   /** 返回可用 token。并发调用共享同一次刷新，不会打出多个请求。 */
@@ -84,7 +93,29 @@ export class TokenManager {
     return this.#state.accessToken;
   }
 
+  /**
+   * 获取一次 token，按错误分类决定是否重试。
+   *
+   * 重试范围刻意收窄：只有平台明确标注的限流码（100001）与网络层失败才重试。配置类
+   * 错误与协议错误立即失败 —— 对着一个写错的 AppSecret 重试三次只是把启动时间拖长
+   * 三倍、日志里多两条噪音，而没有让任何人更接近答案。
+   */
   async #refresh(): Promise<string> {
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < this.#maxAttempts; attempt += 1) {
+      if (attempt > 0) await sleep(RETRY_BACKOFF_MS[attempt - 1] ?? 1500);
+      try {
+        return await this.#fetchOnce();
+      } catch (error) {
+        if (!isRetryableTokenFailure(error)) throw error;
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    throw lastError ?? new TransportError('token 接口重试耗尽');
+  }
+
+  /** 单次请求：校验语义与重试次数无关。 */
+  async #fetchOnce(): Promise<string> {
     let res: Response;
     try {
       res = await fetch(routes.token(), {
@@ -109,7 +140,7 @@ export class TokenManager {
     // 关键：此接口失败时 HTTP 仍是 200，成败必须看 body.code。
     if (typeof body.code === 'number' && body.code !== 0) {
       const detail = typeof body.message === 'string' ? body.message : '';
-      throw new TokenError(body.code, detail);
+      throw new TokenError(body.code, detail, tokenErrorHint(body.code));
     }
 
     if (!res.ok) {
@@ -133,4 +164,22 @@ export class TokenManager {
     };
     return this.#state.accessToken;
   }
+}
+
+/** 重试退避（毫秒）。尝试次数很少，固定阶梯就够，不需要指数运算。 */
+const RETRY_BACKOFF_MS = [500, 1500] as const;
+
+/**
+ * 这个失败是否值得重试。
+ *
+ * 只有两类：平台明确标注的限流码（100001），以及网络层失败 —— 启动瞬间网络未就绪、
+ * DNS 未预热都是常态。其余一律不重试：配置写错重试一万次也是错。
+ */
+function isRetryableTokenFailure(error: unknown): boolean {
+  if (error instanceof TokenError) return isTokenErrorRetryable(error.code);
+  return error instanceof TransportError;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

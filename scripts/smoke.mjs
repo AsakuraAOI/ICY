@@ -823,4 +823,84 @@ if (failures > 0) {
 }
 
 process.stdout.write(`\n${failures === 0 ? 'SMOKE OK' : `SMOKE FAILED（${failures} 项）`}\n`);
+// -------------------------------------------- token 错误分类与重试（DESIGN §5.1）
+// 限流该重试、配置错误绝不重试。这两者写反了在日志里几乎看不出来：都是「启动失败」，
+// 只有请求打了几次、消息里说了什么能区分。所以必须由断言钉住。
+try {
+  let tokenScript = [];
+  let tokenHits = 0;
+  const tokenServer = createServer((req, res) => {
+    tokenHits += 1;
+    req.resume();
+    // 多项脚本逐条消费；单项脚本粘住，用来模拟持续失败。
+    const next = tokenScript.length > 1 ? tokenScript.shift() : tokenScript[0];
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(next ?? { access_token: 'tk', expires_in: '7200' }));
+  });
+  await new Promise((ready) => tokenServer.listen(0, '127.0.0.1', ready));
+  const tokenAddress = tokenServer.address();
+  const tokenPort =
+    tokenAddress === null || typeof tokenAddress === 'string' ? 0 : tokenAddress.port;
+  const apiBaseBeforeTokenRetry = getApiBase();
+  setApiBase(`http://127.0.0.1:${tokenPort}`);
+
+  tokenScript = [
+    { code: 100001, message: 'too many requests' },
+    { access_token: 'tk-retry', expires_in: '7200' },
+  ];
+  tokenHits = 0;
+  let retryToken = null;
+  let retryTokenError = null;
+  try {
+    retryToken = await new TokenManager({ appId: 'x', clientSecret: 'y' }).get();
+  } catch (error) {
+    retryTokenError = error;
+  }
+  check(
+    '限流码 100001 自动重试并最终成功',
+    retryToken === 'tk-retry' && tokenHits === 2,
+    `token=${String(retryToken)} hits=${tokenHits} err=${retryTokenError === null ? 'null' : retryTokenError.name}`,
+  );
+
+  tokenScript = [{ code: 100007, message: 'appid invalid' }];
+  tokenHits = 0;
+  let fatalTokenError = null;
+  try {
+    await new TokenManager({ appId: 'x', clientSecret: 'y' }).get();
+  } catch (error) {
+    fatalTokenError = error;
+  }
+  check(
+    '配置类错误码不重试，且消息里带上处置建议',
+    fatalTokenError !== null &&
+      fatalTokenError.name === 'TokenError' &&
+      tokenHits === 1 &&
+      fatalTokenError.message.includes('配置问题'),
+    `hits=${tokenHits} msg=${String(fatalTokenError?.message)}`,
+  );
+
+  tokenScript = [{ code: 100001, message: 'too many requests' }];
+  tokenHits = 0;
+  let exhaustedError = null;
+  try {
+    await new TokenManager({ appId: 'x', clientSecret: 'y', maxAttempts: 2 }).get();
+  } catch (error) {
+    exhaustedError = error;
+  }
+  check(
+    '限流持续时重试到上限即失败，不会无限重试',
+    exhaustedError !== null && exhaustedError.name === 'TokenError' && tokenHits === 2,
+    `hits=${tokenHits} err=${exhaustedError === null ? 'null' : exhaustedError.name}`,
+  );
+
+  setApiBase(apiBaseBeforeTokenRetry);
+  if (typeof tokenServer.closeAllConnections === 'function') tokenServer.closeAllConnections();
+  tokenServer.close();
+} catch (error) {
+  failures += 1;
+  process.stderr.write(
+    `token 重试自检抛异常：${error && error.stack ? error.stack : String(error)}\n`,
+  );
+}
+
 process.exit(failures === 0 ? 0 : 1);

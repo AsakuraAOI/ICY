@@ -21,8 +21,10 @@ export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 export class TokenError extends Error {
   readonly code: number;
 
-  constructor(code: number, detail: string) {
-    super(`token 接口失败 code=${code}${detail === '' ? '' : ` (${detail})`}`);
+  constructor(code: number, detail: string, hint = '') {
+    super(
+      `token 接口失败 code=${code}${detail === '' ? '' : ` (${detail})`}${hint === '' ? '' : `：${hint}`}`,
+    );
     this.name = 'TokenError';
     this.code = code;
   }
@@ -40,6 +42,20 @@ export function isTokenErrorRetryable(code: number): boolean {
 
 export function isTokenErrorFatal(code: number): boolean {
   return code === 100007 || code === 100016 || code === 10004;
+}
+
+/**
+ * token 错误码的处置建议，会被拼进错误消息。
+ *
+ * 不拼的话，日志里只剩一串 code —— 使用者唯一能做的事就是反复重启，而配置类错误重启
+ * 一万次也还是错。处置建议必须跟着错误一起出现，而不是留在文档里等人去查。
+ */
+export function tokenErrorHint(code: number): string {
+  if (isTokenErrorFatal(code)) {
+    return '这是配置问题，重试无用。请检查 QQ_APP_ID / QQ_APP_SECRET 是否与开放平台一致、机器人是否已创建';
+  }
+  if (isTokenErrorRetryable(code)) return '平台限流，稍后重试';
+  return '';
 }
 
 export interface ApiErrorInit {
