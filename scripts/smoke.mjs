@@ -91,9 +91,12 @@ function groupEvent(patch = {}) {
 try {
   // ---------------------------------------------------------- 发现与聚合（建连之前）
   const manifests = await discoverPlugins(pluginDir);
+  // 插件目录里除了 echo 还有 app-runtime（App Runtime 宿主插件）。这条断言只关心
+  // echo 自己还在、名字还没被改，用 filter 而不是 length === 1 来表达这个意图。
+  const echoManifests = manifests.filter((m) => m.name === 'echo');
   check(
     '发现 echo 插件',
-    manifests.length === 1 && manifests[0].name === 'echo',
+    echoManifests.length === 1,
     manifests.map((m) => m.name).join(', ') || '（空）',
   );
 
@@ -107,11 +110,14 @@ try {
   // ---------------------------------------------------------- 插件宿主
   check(
     'manifest 的 config 被解析（插件私有配置的唯一入口）',
-    manifests[0].config.prefix === 'echo',
-    JSON.stringify(manifests[0].config),
+    echoManifests[0].config.prefix === 'echo',
+    JSON.stringify(echoManifests[0].config),
   );
 
-  const catalog = new PluginCatalog(manifests);
+  // 这一段的被测对象是 ICY 内核 + echo 插件这条链路，所以 catalog 只放 echo：
+  // 插件目录里还有 app-runtime（App Runtime 宿主），它有自己的专项自检
+  // （scripts/app-smoke.mjs），不该影响这里对 echo 时序与 IPC 的断言。
+  const catalog = new PluginCatalog(echoManifests);
   const replies = new ReplyRegistry();
   const delivered = [];
   let hostReplyCalls = 0;
@@ -763,11 +769,17 @@ try {
 
   // ------------------------------------------- 崩溃重启与 quarantine（P6 加固）
   const fixtureManifests = await discoverPlugins(resolve(here, 'fixtures'));
-  const fixtureNames = fixtureManifests.map((m) => m.name).sort();
+  // fixtures 目录里除了这三个内核夹具，还有 app-runtime-broken（App Runtime 的启动
+  // 失败夹具）。它由 scripts/app-smoke.mjs 专项自检，不属于内核夹具，所以这里
+  // 按「三个内核夹具都在」来断言，而不是断言目录里恰好只有三个。
+  const kernelFixtureNames = fixtureManifests
+    .map((m) => m.name)
+    .filter((name) => name !== 'app-runtime-broken')
+    .sort();
   check(
     '发现 crasher / ts-plugin / zombie 三个夹具',
-    fixtureNames.join('|') === 'crasher|ts-plugin|zombie',
-    fixtureNames.join(', ') || '（空）',
+    kernelFixtureNames.join('|') === 'crasher|ts-plugin|zombie',
+    fixtureManifests.map((m) => m.name).join(', ') || '（空）',
   );
 
   // ------------------------------- 多语言插件：manifest.runtime 决定用什么跑起来
