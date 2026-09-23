@@ -66,19 +66,30 @@ plugins/<name>/
 }
 ```
 
-插件实现 `lifecycle/init`、`lifecycle/shutdown`、`ping`、`event/dispatch` 四个方法，初始化完成后主动发 `plugin/ready` 通知。`stdout` 只能出现协议帧，日志一律走 `stderr`。
+Node.js / TypeScript 插件优先使用内置 SDK，生命周期、`plugin/ready`、JSON-RPC pending map 与 NDJSON 拆帧都由 SDK 处理：
 
-回复只需要表达**意图** —— `msg_type`、`msg_id`、`msg_seq` 与整个上传流程都由内核负责：
+```ts
+import { createPlugin } from 'icy-qqbot/sdk';
 
-```js
-{ scope: 'group', body: { kind: 'text', text: '你好' } }
+createPlugin({
+  name: 'hello',
+  version: '0.1.0',
+  onEvent({ event }) {
+    if (event.kind !== 'group' && event.kind !== 'c2c') return null;
+    return { scope: event.kind, body: { kind: 'text', text: '你好' } };
+  },
+}).run();
 ```
+
+底层仍是同一套 IPC 契约；其他语言可以直接实现 JSON-RPC 协议。SDK 启动后 `stdout` 仍只能出现协议帧，日志使用 `host.log`、`stderr` 或 `console.error`。
+
+回复只需要表达**意图** —— `msg_type`、`msg_id`、`msg_seq` 与整个上传流程都由内核负责。
 
 `kind` 取值：`text` / `markdown` / `ark` / `embed` / `media`（图片、语音、视频、文件；给 `url`、`data` 或 `localPath`）/ `typing`（仅单聊）。`keyboard` 与 `referenceMessageId` 可以与任意一种共存。
 
 能力（`capabilities`）没声明就会被内核拒绝，不会打到平台：`message.reply` / `message.send` / `message.media`（叠加项，发富媒体时额外需要）/ `message.recall`。
 
-完整契约见 [`docs/plugin.md`](docs/plugin.md)，可跑的最小示例是 [`plugins/echo/index.js`](plugins/echo/index.js)。多语言与 TypeScript 插件见该文档 §1.1。
+SDK 用法见 [`docs/sdk.md`](docs/sdk.md)，完整底层契约见 [`docs/plugin.md`](docs/plugin.md)。可跑的协议示例仍保留在 [`plugins/echo/index.js`](plugins/echo/index.js)。
 
 ## 目录
 
@@ -87,10 +98,11 @@ src/core/     协议层 token / api / routes / events / transport
               语义层 normalize / dedupe / pending / dispatch / throttle
               出站层 outbound（意图 → 协议） / media（上传） / errors（唯一分类点）
 src/host/     manifest / supervisor（进程监督）/ ipc（JSON-RPC）/ registry
+src/sdk/      Node.js / TypeScript 插件 SDK（插件侧协议实现）
 src/types/    qq.ts —— 平台 payload 类型，只描述字段、不加工
 plugins/echo/ 示例插件
 scripts/      smoke.mjs、e2e.mjs、e2e/mock-qq.mjs（替身后端）
-docs/         plugin.md —— 插件作者指南
+docs/         plugin.md —— 底层插件契约；sdk.md —— Node.js / TS SDK
 ```
 
 ## 设计文档

@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "description": "极简 QQ 官方机器人内核：只做协议接入、事件归一化与插件宿主",
+  "exports": {
+    "./sdk": {
+      "types": "./dist/sdk/index.d.ts",
+      "import": "./dist/sdk/index.js"
+    }
+  },
   "engines": {
     "node": ">=22.0.0"
   },

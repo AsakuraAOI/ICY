@@ -19,7 +19,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "sourceMap": true,
-    "declaration": false
+    "declaration": true
   },
   "include": ["src/**/*.ts"]
 }
