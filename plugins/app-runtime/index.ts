@@ -21,6 +21,11 @@ import type { Logger } from 'icy-qqbot/app';
 
 type RuntimeConfig = { modules?: unknown };
 
+interface ModuleSpec {
+  path: string;
+  config: unknown;
+}
+
 /** 模块日志经 host/log 回到 ICY 内核：stdout 属于协议帧，不能直接写。 */
 function hostLogger(host: PluginHost): Logger {
   const at =
@@ -31,27 +36,46 @@ function hostLogger(host: PluginHost): Logger {
   return { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error') };
 }
 
-function readModuleSpecs(config: RuntimeConfig): string[] {
+function readModuleSpecs(config: RuntimeConfig): ModuleSpec[] {
   const raw = config.modules;
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) {
-    throw new Error('app-runtime 的 config.modules 必须是字符串数组（模块入口路径列表）');
+    throw new Error('app-runtime 的 config.modules 必须是数组，条目为路径字符串或 { path, config }');
   }
   return raw.map((item) => {
-    if (typeof item !== 'string' || item.trim() === '') {
-      throw new Error(`app-runtime 的 config.modules 里有非法条目：${JSON.stringify(item)}`);
+    if (typeof item === 'string' && item.trim() !== '') {
+      return { path: item.trim(), config: {} };
     }
-    return item;
+
+    if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+      const record = item as Record<string, unknown>;
+      if (typeof record.path === 'string' && record.path.trim() !== '') {
+        return {
+          path: record.path.trim(),
+          config: Object.prototype.hasOwnProperty.call(record, 'config') ? record.config : {},
+        };
+      }
+    }
+
+    throw new Error(
+      `app-runtime 的 config.modules 里有非法条目：${JSON.stringify(item)}（需要路径字符串或 { path, config }）`,
+    );
   });
 }
 
 let application: Application | null = null;
+let stopping = false;
+const activeDispatches = new Set<{
+  controller: AbortController;
+  promise: ReturnType<Application['dispatch']>;
+}>();
 
 createPlugin<RuntimeConfig>({
   name: 'app-runtime',
   version: '0.1.0',
 
   async onInit({ host, config }) {
+    stopping = false;
     const app = new Application({ logger: hostLogger(host) });
 
     // Core Module 由 Runtime 装配：它提供 EventBus 与 MessagePipeline。
@@ -59,7 +83,7 @@ createPlugin<RuntimeConfig>({
 
     // 模块路径相对插件进程 cwd（= 插件目录），与 ICY 的 spawn 约定一致。
     for (const spec of readModuleSpecs(config)) {
-      await app.load(spec);
+      await app.load(spec.path, spec.config);
     }
 
     await app.start();
@@ -67,19 +91,33 @@ createPlugin<RuntimeConfig>({
     host.log('info', `App Runtime 已启动，模块顺序：${app.dependencyOrder.join(' → ')}`);
   },
 
-  async onEvent({ event, reply, host }) {
+  async onEvent({ event, reply, bot, host }) {
     // 未启动就不处理。这里返回 null 而不是抛错：对这条消息来说「没人处理」是正确语义，
     // 抛出去只会让内核记一条 JSON-RPC 错误，问题依旧没有上下文。
-    if (application === null) return null;
-    return application.dispatch({ event, reply, host });
+    const app = application;
+    if (app === null || stopping) return null;
+
+    const controller = new AbortController();
+    const promise = app.dispatch({ event, botId: bot.id, reply, host, signal: controller.signal });
+    const dispatch = { controller, promise };
+    activeDispatches.add(dispatch);
+    try {
+      return await promise;
+    } finally {
+      activeDispatches.delete(dispatch);
+    }
   },
 
   async onShutdown({ host }) {
+    stopping = true;
     const app = application;
     application = null;
     if (app === null) return;
 
     try {
+      // 先取消入站请求并短暂等待，让模型 HTTP 调用有机会响应 AbortSignal。
+      for (const dispatch of activeDispatches) dispatch.controller.abort();
+      await waitActiveDispatches(3_500);
       await app.stop();
       host.log('info', 'App Runtime 已停止');
     } catch (error) {
@@ -92,4 +130,19 @@ createPlugin<RuntimeConfig>({
 
 function describe(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+async function waitActiveDispatches(timeoutMs: number): Promise<void> {
+  if (activeDispatches.size === 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.allSettled([...activeDispatches].map((dispatch) => dispatch.promise)),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

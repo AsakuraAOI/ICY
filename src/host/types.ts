@@ -18,11 +18,10 @@ export type { IntentName, InboundEvent, OutboundMessage, PublicReplyHandle, Repl
 /**
  * IPC 协议版本。握手时比对，不一致直接拒绝加载。
  *
- * v2：回复与主动消息从「一段文本」改成 OutboundMessage（文本 / Markdown / ARK /
- * Embed / 键盘 / 富媒体），并新增 message.media 能力。这是破坏性变更，版本号必须
- * 跟着动 —— 否则一个按 v1 写的插件会以为自己发的 text 仍然有效。
+ * v2：回复与主动消息改成 OutboundMessage，并新增 message.media 能力。
+ * v3：PublicReplyHandle 增加 acceptBefore，供异步处理方按宿主提前拒绝策略计算预算。
  */
-export const IPC_PROTOCOL_VERSION = 2;
+export const IPC_PROTOCOL_VERSION = 3;
 
 /**
  * 插件可声明的能力。没声明的能力，调用即被内核拒绝。

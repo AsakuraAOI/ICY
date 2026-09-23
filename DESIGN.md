@@ -383,7 +383,7 @@ interface ReplyHandle {
 - **形状校验前移**：`kind` 未知、`media` 既无 `url` 又无 `data`、`fileType=4` 缺 `fileName` 都在发送之前挡掉，而不是等平台回一个没有语义的错误码。
 - **`typing` 的会话限制在内核判定**：`msg_type: 6` 只有单聊有，而判定它是「哪个会话」需要内核手里的 handle —— 所以这个检查放在 `pending.ts` 的 `resolve()` 里，插件自报的 `scope` 不作数。
 
-`IPC_PROTOCOL_VERSION` 因此从 1 升到 2：`{ text }` → `{ body }` 是破坏性变更，一个按 v1 写的插件会以为自己发的文本仍然有效。
+`IPC_PROTOCOL_VERSION` 当时从 1 升到 2：`{ text }` → `{ body }` 是破坏性变更，一个按 v1 写的插件会以为自己发的文本仍然有效。当前 v3 在公开回复句柄中增加 `acceptBefore`，让异步处理方使用内核实际执行的提前拒绝时刻。
 
 ---
 

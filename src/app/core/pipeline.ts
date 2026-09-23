@@ -139,6 +139,7 @@ export class MessagePipelineImpl implements MessagePipeline {
 
     const ctx: MessageContext = {
       event: input.event,
+      ...(input.botId === undefined ? {} : { botId: input.botId }),
       reply: input.reply,
       host: input.host,
       signal: input.signal ?? NEVER_ABORT,

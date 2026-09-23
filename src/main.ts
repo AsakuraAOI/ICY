@@ -148,7 +148,7 @@ async function main(): Promise<void> {
     bot: botUsername === undefined ? { id: config.appId } : { id: config.appId, username: botUsername },
     log,
     onReply: async (pluginName, params) => {
-      const resolution = replies.resolve(params.handleId, params.body);
+      const resolution = replies.resolve(params.handleId, params.body, Date.now(), pluginName);
       if (!resolution.ok) {
         log(
           'warn',

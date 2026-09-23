@@ -57,6 +57,7 @@ export class Gateway {
   /** 收到心跳 ACK 之前不再发下一次心跳。 */
   #heartbeatAcked = true;
   #reconnectAttempts = 0;
+  #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #stopping = false;
 
   constructor(transport: WsTransport, options: GatewayOptions) {
@@ -79,6 +80,10 @@ export class Gateway {
   stop(): void {
     this.#stopping = true;
     this.#clearHeartbeat();
+    if (this.#reconnectTimer !== null) {
+      clearTimeout(this.#reconnectTimer);
+      this.#reconnectTimer = null;
+    }
     this.#transport.close(1000, 'shutdown');
   }
 
@@ -103,7 +108,12 @@ export class Gateway {
   #onMessage(data: string): void {
     let payload: GatewayPayload;
     try {
-      payload = JSON.parse(data) as GatewayPayload;
+      const parsed: unknown = JSON.parse(data);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        this.#log('warn', '收到非对象的 Gateway 帧，已忽略');
+        return;
+      }
+      payload = parsed as GatewayPayload;
     } catch {
       this.#log('warn', '收到非 JSON 的 Gateway 帧，已忽略');
       return;
@@ -205,6 +215,9 @@ export class Gateway {
 
   #startHeartbeat(): void {
     this.#clearHeartbeat();
+    // Hello 到达时尚未 Identify/Resume。此时立即发送的心跳可能被服务端忽略，
+    // 下一轮会被误判为 ACK 超时并重连。首个心跳在一个间隔后发送。
+    this.#heartbeatAcked = true;
     this.#heartbeatTimer = setInterval(() => {
       if (!this.#heartbeatAcked) {
         this.#log('warn', '心跳 ACK 超时，主动重连');
@@ -214,9 +227,6 @@ export class Gateway {
       this.#heartbeatAcked = false;
       this.#send({ op: Op.HEARTBEAT, d: this.#seq });
     }, this.#heartbeatIntervalMs);
-    // 首次心跳按文档在间隔×jitter 后立即发，这里简化为直接发一次。
-    this.#heartbeatAcked = false;
-    this.#send({ op: Op.HEARTBEAT, d: this.#seq });
   }
 
   #clearHeartbeat(): void {
@@ -249,7 +259,7 @@ export class Gateway {
   }
 
   #reconnect(): void {
-    if (this.#stopping) return;
+    if (this.#stopping || this.#reconnectTimer !== null) return;
     const max = this.#options.maxReconnects ?? 10;
     if (this.#reconnectAttempts >= max) {
       // 打满上限不能只是「安静地停下」：此时连接已经没了、插件还在跑，进程既不收事件
@@ -268,13 +278,16 @@ export class Gateway {
     const delay = Math.round(base * (0.5 + Math.random()));
     this.#reconnectAttempts += 1;
     this.#log('info', `${delay}ms 后重连（第 ${this.#reconnectAttempts} 次）`);
-    setTimeout(() => {
+    this.#clearHeartbeat();
+    this.#reconnectTimer = setTimeout(() => {
+      this.#reconnectTimer = null;
       if (this.#stopping) return;
       void this.start().catch((error: unknown) => {
         this.#log('warn', `重连失败：${error instanceof Error ? error.message : String(error)}`);
         this.#reconnect();
       });
     }, delay);
+    this.#transport.close(1000, 'reconnect');
   }
 
   #log(level: 'info' | 'warn' | 'error', message: string): void {

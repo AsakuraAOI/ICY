@@ -108,7 +108,7 @@ async onEvent({ reply, host }) {
 }
 ```
 
-`msg_id`、`msg_seq`、5 分钟窗口与次数限制仍全部由内核持有，SDK 不复制这些规则。
+`msg_id`、`msg_seq`、5 分钟窗口与次数限制仍全部由内核持有，SDK 不复制这些规则。`reply.acceptBefore` 是内核的最晚提交时间，异步工作应把它作为回复截止时间的一部分。
 
 ## 主动消息
 
@@ -166,6 +166,6 @@ host.log('info', 'task completed', { taskId: '42' });
 
 ## 协议版本
 
-SDK 与当前 ICY IPC 协议一起版本化。`lifecycle/init.protocolVersion` 与 SDK 的 `IPC_PROTOCOL_VERSION` 不一致时，SDK 会拒绝初始化，而不是带着错误 ABI 继续运行。
+SDK 与当前 ICY IPC 协议一起版本化。当前协议为 v3，新增 `PublicReplyHandle.acceptBefore`；`lifecycle/init.protocolVersion` 与 SDK 的 `IPC_PROTOCOL_VERSION` 不一致时，SDK 会拒绝初始化，而不是带着错误 ABI 继续运行。
 
 如果你需要研究或实现其他语言 SDK，直接按照 [`plugin.md`](plugin.md) 的原始 JSON-RPC 契约实现即可；Node.js SDK 不是新的协议层。

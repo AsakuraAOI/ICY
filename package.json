@@ -23,8 +23,10 @@
     "start": "node dist/main.js",
     "smoke": "node scripts/smoke.mjs",
     "app-smoke": "node scripts/app-smoke.mjs",
+    "agent-smoke": "node scripts/agent-smoke.mjs",
+    "agent-flow-smoke": "node --experimental-sqlite scripts/agent-flow-smoke.mjs",
     "e2e": "node scripts/e2e.mjs",
-    "verify": "npm run typecheck && npm run build && npm run smoke && npm run app-smoke && npm run e2e"
+    "verify": "npm run typecheck && npm run build && npm run smoke && npm run app-smoke && npm run agent-smoke && npm run agent-flow-smoke && npm run e2e"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",

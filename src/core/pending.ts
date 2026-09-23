@@ -12,6 +12,8 @@
  * 提前回收会把这条自由度掐死。回收统一交给 sweep()。
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type { InboundEvent } from './normalize.js';
 import { outboundScopeProblem, type OutboundMessage } from './outbound.js';
 
@@ -52,6 +54,8 @@ export interface PublicReplyHandle {
   handleId: string;
   /** 窗口关闭时间戳（毫秒），已减去 buffer。 */
   expiresAt: number;
+  /** 内核开始提前拒绝的时刻；超过该时间提交会被拒绝。 */
+  acceptBefore: number;
   /** 还允许回复几次。仅供参考，最终以 resolve() 的校验为准。 */
   remaining: number;
 }
@@ -77,10 +81,13 @@ export type ReplyResolution =
 
 interface ReplyHandleState {
   id: string;
+  /** 收到该 handle 的插件；空集仅供独立调用方与测试使用。 */
+  authorizedPlugins: ReadonlySet<string>;
   /** 回复目标：群聊或单聊，决定最终走哪个发送端点。 */
   target: ReplyTarget;
   msgId: string;
   expiresAt: number;
+  acceptBefore: number;
   remaining: number;
   nextSeq: number;
 }
@@ -105,7 +112,6 @@ export class ReplyRegistry {
   readonly #maxReplies: number;
   readonly #maxHandles: number;
   readonly #handles = new Map<string, ReplyHandleState>();
-  #counter = 0;
 
   constructor(options: ReplyRegistryOptions = {}) {
     this.#windowMs = options.windowMs ?? 300_000;
@@ -121,7 +127,11 @@ export class ReplyRegistry {
    * 返回 null 表示这条事件没有被动窗口（只有群消息与单聊消息有），调用方应把 null
    * 作为「本事件不允许被动回复」传给插件链接口，而不是跳过投递。
    */
-  register(event: InboundEvent, now: number = Date.now()): PublicReplyHandle | null {
+  register(
+    event: InboundEvent,
+    now: number = Date.now(),
+    authorizedPlugins: readonly string[] = [],
+  ): PublicReplyHandle | null {
     const target = replyTargetOf(event);
     if (target === null) return null;
     const msgId = event.messageId;
@@ -129,13 +139,17 @@ export class ReplyRegistry {
 
     this.sweep(now);
 
-    const id = `h${++this.#counter}`;
+    const id = `h${randomUUID()}`;
+    const expiresAt = now + Math.max(this.#windowMs - this.#windowBufferMs, 1_000);
     const state: ReplyHandleState = {
       id,
+      authorizedPlugins: new Set(authorizedPlugins),
       target,
       msgId,
       // 窗口 5 分钟，本地再提前 30 秒关闭，绝不贴着平台的边界发。
-      expiresAt: now + Math.max(this.#windowMs - this.#windowBufferMs, 1_000),
+      expiresAt,
+      // resolve() 在窗口剩余不足 minRemainingMs 时拒绝，因此把同一阈值公开给异步插件。
+      acceptBefore: expiresAt - this.#minRemainingMs,
       remaining: this.#maxReplies,
       nextSeq: 1,
     };
@@ -146,7 +160,12 @@ export class ReplyRegistry {
       if (oldest.done !== true) this.#handles.delete(oldest.value);
     }
 
-    return { handleId: id, expiresAt: state.expiresAt, remaining: state.remaining };
+    return {
+      handleId: id,
+      expiresAt: state.expiresAt,
+      acceptBefore: state.acceptBefore,
+      remaining: state.remaining,
+    };
   }
 
   /**
@@ -155,9 +174,18 @@ export class ReplyRegistry {
    * 窗口剩余不足 minRemainingMs 时提前拒绝，而不是让请求打到 OpenAPI 拿
    * 40034005 —— 插件拿到的是结构化错误，可以自己决定降级策略。
    */
-  resolve(handleId: string, message: OutboundMessage, now: number = Date.now()): ReplyResolution {
+  resolve(
+    handleId: string,
+    message: OutboundMessage,
+    now: number = Date.now(),
+    pluginName?: string,
+  ): ReplyResolution {
     const state = this.#handles.get(handleId);
-    if (state === undefined) {
+    if (
+      state === undefined ||
+      (state.authorizedPlugins.size > 0 &&
+        (pluginName === undefined || !state.authorizedPlugins.has(pluginName)))
+    ) {
       return {
         ok: false,
         error: { reason: 'unknown_handle', detail: `未知或已回收的 handleId=${handleId}` },

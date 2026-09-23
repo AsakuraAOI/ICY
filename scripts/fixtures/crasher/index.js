@@ -40,7 +40,7 @@ process.stdin.on('data', (chunk) => {
       write({
         jsonrpc: '2.0',
         method: 'plugin/ready',
-        params: { name: 'crasher', version: VERSION, protocolVersion: 2 },
+        params: { name: 'crasher', version: VERSION, protocolVersion: 3 },
       });
       // 握手一完成就崩，模拟「能启动但稳定不住」的插件。
       setTimeout(() => process.exit(9), 150);

@@ -126,8 +126,8 @@ try {
     catalog,
     bot: { id: 'smoke-app-id' },
     log: (level, message) => logs.push(`${level} ${message}`),
-    onReply: async (_pluginName, params) => {
-      const resolution = replies.resolve(params.handleId, params.body);
+    onReply: async (pluginName, params) => {
+      const resolution = replies.resolve(params.handleId, params.body, Date.now(), pluginName);
       if (!resolution.ok) {
         return { ok: false, reason: resolution.error.reason, detail: resolution.error.detail };
       }
@@ -242,6 +242,19 @@ try {
       seqSecond.ok === true &&
       seqFirst.instruction.msgSeq === 1 &&
       seqSecond.instruction.msgSeq === 2,
+  );
+
+  const owned = new ReplyRegistry();
+  const ownedHandle = owned.register(groupEvent(), Date.now(), ['echo']);
+  const foreignReply = ownedHandle === null ? null : owned.resolve(ownedHandle.handleId, 'x', Date.now(), 'other');
+  const ownReply = ownedHandle === null ? null : owned.resolve(ownedHandle.handleId, 'x', Date.now(), 'echo');
+  check(
+    '被动句柄不可预测且只能由获发插件使用',
+    ownedHandle !== null &&
+      ownedHandle.handleId !== 'h1' &&
+      foreignReply?.ok === false &&
+      foreignReply.error.reason === 'unknown_handle' &&
+      ownReply?.ok === true,
   );
 
   const c2cHandle = replies.register({
@@ -893,6 +906,21 @@ try {
   await supervisor.stopAll();
   check('echo 已停止', supervisor.stateOf('echo') === 'stopped', `state=${supervisor.stateOf('echo')}`);
 
+  const noReplyManifest = { ...echoManifests[0], capabilities: [] };
+  const noReplyCatalog = new PluginCatalog([noReplyManifest]);
+  const noReplySupervisor = new Supervisor(noReplyCatalog, {
+    catalog: noReplyCatalog,
+    bot: { id: 'smoke-app-id' },
+    log: (level, message) => logs.push(`${level} ${message}`),
+    onReply: async () => ({ ok: false, reason: 'unused', detail: '' }),
+    onSend: async () => ({ ok: false, detail: '' }),
+    onRecall: async () => ({ ok: false, reason: 'unused', detail: '' }),
+  });
+  await noReplySupervisor.startAll();
+  const deniedReply = await noReplySupervisor.endpoints()[0].dispatch(groupEvent(), null);
+  check('同步回复必须声明 message.reply', deniedReply === null);
+  await noReplySupervisor.stopAll();
+
   // --------------------------------- 重连打满上限必须致命上报，而不是让进程悬挂
   // 打满上限时连接已经没了、插件还在跑：进程既不收事件也不退出，从外面看像正常。
   // 用假 transport 驱动状态机，不需要真连 WebSocket；maxReconnects=0 表示第一次
@@ -930,6 +958,54 @@ try {
     fatalErrors.length === 1 && fatalErrors[0].name === 'FatalError',
     `errors=${fatalErrors.map((error) => error.name).join(',') || '（空）'}`,
   );
+
+  const reconnectTransport = {
+    connects: 0,
+    closes: 0,
+    connect: async function () { this.connects += 1; },
+    send: () => {},
+    close: function () { this.closes += 1; },
+    onMessage(handler) { this.message = handler; },
+    onClose: () => {},
+  };
+  const liveReconnect = new Gateway(reconnectTransport, {
+    tokenManager: new TokenManager({ appId: 'x', clientSecret: 'y' }),
+    intents: ['GROUP_AND_C2C_EVENT'],
+    onDispatch: () => {},
+  });
+  await liveReconnect.start();
+  let malformedIgnored = true;
+  try { reconnectTransport.message('null'); } catch { malformedIgnored = false; }
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  try {
+    reconnectTransport.message('{"op":7}');
+    reconnectTransport.message('{"op":7}');
+    await delay(650);
+  } finally {
+    Math.random = originalRandom;
+  }
+  check('Gateway 忽略非对象帧', malformedIgnored);
+  check('服务端要求重连时先关旧连接且只安排一次新连接', reconnectTransport.connects === 2 && reconnectTransport.closes === 1);
+  liveReconnect.stop();
+
+  const heartbeatTransport = {
+    sent: [],
+    connect: async () => {},
+    send(data) { this.sent.push(JSON.parse(data)); },
+    close: () => {},
+    onMessage(handler) { this.message = handler; },
+    onClose: () => {},
+  };
+  const heartbeatGateway = new Gateway(heartbeatTransport, {
+    tokenManager: new TokenManager({ appId: 'x', clientSecret: 'y' }),
+    intents: ['GROUP_AND_C2C_EVENT'],
+    onDispatch: () => {},
+  });
+  await heartbeatGateway.start();
+  heartbeatTransport.message('{"op":10,"d":{"heartbeat_interval":1000}}');
+  check('Hello 阶段不提前发送可能被忽略的心跳', !heartbeatTransport.sent.some((frame) => frame.op === 1));
+  heartbeatGateway.stop();
 
   reconnectGateway.stop();
   setApiBase(apiBaseBeforeGateway);

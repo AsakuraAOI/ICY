@@ -101,7 +101,7 @@ plugins/<name>/
 `init` 回 `ok: true` 之后，插件必须主动发一行通知：
 
 ```json
-{"jsonrpc":"2.0","method":"plugin/ready","params":{"name":"echo","version":"0.1.0","protocolVersion":2}}
+{"jsonrpc":"2.0","method":"plugin/ready","params":{"name":"echo","version":"0.1.0","protocolVersion":3}}
 ```
 
 `protocolVersion` 与内核不一致时，内核只记警告，不拒绝加载。
@@ -119,11 +119,12 @@ interface DispatchParams {
 interface PublicReplyHandle {
   handleId: string;   // 内核内部 id，不是 msg_id
   expiresAt: number;  // 窗口关闭时刻（毫秒），已减去 buffer
+  acceptBefore: number; // 最晚提交时刻；超过后内核会提前拒绝
   remaining: number;  // 还允许回几次，仅供参考
 }
 ```
 
-**插件拿不到 `msg_id`，也决定不了 `msg_seq`。** 被动回复有平台硬约束（群聊与单聊同为 5 分钟 / 最多 5 次），让插件拿着 `msg_id` 硬发很容易撞墙。内核在收到事件时立刻预登记句柄；窗口剩余不足 60 秒时提前拒绝并返回结构化错误，而不是让请求打到平台拿 `40034005`。
+**插件拿不到 `msg_id`，也决定不了 `msg_seq`。** 被动回复有平台硬约束（群聊与单聊同为 5 分钟 / 最多 5 次），让插件拿着 `msg_id` 硬发很容易撞墙。内核在事件进入调度器时开始计算回复预算；窗口剩余不足 60 秒时提前拒绝并返回结构化错误，而不是让请求打到平台拿 `40034005`。异步插件应在 `acceptBefore` 前提交回复，排队等待不会延长此时刻。
 
 两条回复路径：
 
@@ -131,7 +132,7 @@ interface PublicReplyHandle {
 2. **异步调用**：返回 `null`，稍后用 `host/reply` + `handleId` 回。
 
 ```json
-{"jsonrpc":"2.0","id":3,"method":"host/reply","params":{"handleId":"h1","body":{"kind":"text","text":"处理完了"}}}
+{"jsonrpc":"2.0","id":3,"method":"host/reply","params":{"handleId":"<内核下发的 handleId>","body":{"kind":"text","text":"处理完了"}}}
 ```
 
 `scope` 必须与事件场景一致（群事件 `group`，单聊事件 `c2c`）。但**它只是自述**：真正的目标由内核持有的句柄决定，插件改不了。

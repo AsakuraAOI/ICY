@@ -34,6 +34,8 @@ export interface InboundEvent {
   messageId?: string;
   /** 发送者标识。群聊取 author.member_openid，单聊取 author.user_openid。 */
   senderId?: string;
+  /** 标识 senderId 的平台字段；授权不能把回退 author.id 当作 OpenID。 */
+  senderIdSource?: 'member_openid' | 'user_openid' | 'author_id';
   senderName?: string;
   /** 群内角色：member / admin / owner。 */
   senderRole?: string;
@@ -223,7 +225,12 @@ function fillCommon(
     if (typeof author.member_role === 'string') event.senderRole = author.member_role;
     const preferred = idSource === 'member' ? author.member_openid : author.user_openid;
     const senderId = preferred ?? author.id;
-    if (typeof senderId === 'string') event.senderId = senderId;
+    if (typeof senderId === 'string') {
+      event.senderId = senderId;
+      event.senderIdSource = typeof preferred === 'string'
+        ? idSource === 'member' ? 'member_openid' : 'user_openid'
+        : 'author_id';
+    }
   }
 
   const ext = parseSceneExt(d.message_scene?.ext);

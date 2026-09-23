@@ -306,10 +306,14 @@ export class PluginProcess {
     const runtime = this.#manifest.runtime;
     const command = runtime?.command ?? this.#options.execPath ?? process.execPath;
     const args = [...(runtime?.args ?? []), entry];
+    // 插件不是凭证持有者。spawn 默认继承 process.env，而本地 .env 已被加载到其中。
+    const env = { ...process.env };
+    delete env.QQ_APP_SECRET;
     return spawn(command, args, {
       cwd: this.#manifest.dir,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      env,
     });
   }
 
@@ -629,6 +633,11 @@ export class PluginProcess {
 
   #readReplyRequest(result: unknown): ReplyRequest | null {
     if (result === null || result === undefined) return null;
+
+    if (!this.#options.catalog.can(this.#manifest.name, 'message.reply')) {
+      this.#log('warn', `插件 ${this.#manifest.name} 返回了回复但未声明 message.reply，已忽略`);
+      return null;
+    }
 
     const record = readRecord(result);
     if (record === null) {

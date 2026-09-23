@@ -4,7 +4,7 @@
   "entry": "index.ts",
   "runtime": {
     "command": "node",
-    "args": ["--experimental-strip-types"]
+    "args": ["--experimental-strip-types", "--experimental-sqlite"]
   },
   "intents": ["GROUP_AND_C2C_EVENT"],
   "events": ["GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"],
@@ -13,7 +13,37 @@
     "modules": [
       "../../dist/modules/counter.js",
       "../../dist/modules/pinger.js",
-      "../../dist/modules/greeter.js",
+      {
+        "path": "../../dist/modules/llm/module.js",
+        "config": {}
+      },
+      {
+        "path": "../../dist/modules/agent/policy.js",
+        "config": {}
+      },
+      "../../dist/modules/agent/tools-module.js",
+      {
+        "path": "../../dist/modules/agent/tools-basic.js",
+        "config": { "knowledge": [] }
+      },
+      "../../dist/modules/agent/engine-module.js",
+      {
+        "path": "../../dist/modules/agent-runtime/runs.js",
+        "config": { "enabled": false }
+      },
+      "../../dist/modules/agent-chat/commands.js",
+      {
+        "path": "../../dist/modules/agent-chat/module.js",
+        "config": {
+          "enabled": false
+        }
+      },
+      {
+        "path": "../../dist/modules/greeter.js",
+        "config": {
+          "prefix": "count"
+        }
+      },
       "../../dist/modules/auditor.js"
     ]
   },

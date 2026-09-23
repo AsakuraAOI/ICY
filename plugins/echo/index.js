@@ -12,7 +12,7 @@
  * 本文件故意不依赖任何库，也不 import 内核代码 —— 插件与内核之间只有 IPC。
  */
 
-const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 const VERSION = '0.1.0';
 
 // 插件私有配置，由内核从 plugin.json 的 config 字段下发。初值与 plugin.json 一致，

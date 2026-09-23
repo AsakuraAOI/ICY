@@ -65,12 +65,15 @@ export class BuiltinWsTransport implements WsTransport {
       ws.addEventListener('error', onError, { once: true });
 
       ws.addEventListener('message', (evt: MessageEvent) => {
+        if (this.#ws !== ws) return;
         const data = typeof evt.data === 'string' ? evt.data : String(evt.data);
         for (const h of this.#messageHandlers) h(data);
       });
       // 本项目的 lib 是纯 ES2023，没有 DOM 的 CloseEvent 全局类型；
       // 按结构取字段，缺省 1006（异常关闭）、空 reason。
       ws.addEventListener('close', (evt) => {
+        if (this.#ws !== ws) return;
+        this.#ws = null;
         const close = evt as unknown as { code?: unknown; reason?: unknown };
         const code = typeof close.code === 'number' ? close.code : 1006;
         const reason = typeof close.reason === 'string' ? close.reason : '';

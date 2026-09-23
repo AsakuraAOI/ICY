@@ -103,6 +103,7 @@ export const Events: ServiceToken<EventBus> = defineService<EventBus>('events');
 /** 一条待处理的消息。由 App Runtime Plugin 从 ICY 的 event/dispatch 组装。 */
 export interface MessageDispatch {
   readonly event: InboundEvent;
+  readonly botId?: string;
   readonly reply: PublicReplyHandle | null;
   readonly host: PluginHost;
   /** 模块停止时用它中断长处理。省略时管道补一个永不 abort 的信号。 */
@@ -112,6 +113,7 @@ export interface MessageDispatch {
 /** middleware 看到的上下文。 */
 export interface MessageContext {
   readonly event: InboundEvent;
+  readonly botId?: string;
   readonly reply: PublicReplyHandle | null;
   readonly host: PluginHost;
   readonly signal: AbortSignal;

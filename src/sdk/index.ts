@@ -523,6 +523,7 @@ function parseDispatchParams(value: unknown): DispatchParams {
       replyRecord === null ||
       typeof replyRecord.handleId !== 'string' ||
       typeof replyRecord.expiresAt !== 'number' ||
+      typeof replyRecord.acceptBefore !== 'number' ||
       typeof replyRecord.remaining !== 'number'
     ) {
       throw new PluginRequestError(RpcErrorCode.INVALID_PARAMS, 'event/dispatch has invalid reply');
@@ -530,6 +531,7 @@ function parseDispatchParams(value: unknown): DispatchParams {
     reply = {
       handleId: replyRecord.handleId,
       expiresAt: replyRecord.expiresAt,
+      acceptBefore: replyRecord.acceptBefore,
       remaining: replyRecord.remaining,
     };
   }

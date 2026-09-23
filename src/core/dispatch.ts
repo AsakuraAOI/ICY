@@ -98,11 +98,13 @@ export class Dispatcher {
 
   /** 投递一条已归一化的事件。立即返回，处理在后台按会话串行推进。 */
   submit(event: InboundEvent): void {
+    // 被动回复窗口从消息进入本地调度时开始计时，后续会话串行等待不能延长它。
+    const receivedAt = Date.now();
     const key = conversationKey(event);
     const prev = this.#chains.get(key) ?? Promise.resolve();
 
     const task = prev
-      .then(() => this.#handle(event))
+      .then(() => this.#handle(event, receivedAt))
       .catch((error: unknown) => {
         this.#log('error', `事件 ${event.eventId} 处理失败：${describe(error)}`);
       });
@@ -134,7 +136,7 @@ export class Dispatcher {
     return this.#chains.size;
   }
 
-  async #handle(event: InboundEvent): Promise<void> {
+  async #handle(event: InboundEvent, receivedAt: number): Promise<void> {
     const candidates = this.#plugins
       .filter((plugin) => plugin.events.includes(event.eventType))
       .sort((a, b) => a.priority - b.priority);
@@ -147,7 +149,9 @@ export class Dispatcher {
     // 只为「真的会有人处理」的事件登记被动窗口。没有订阅者还登记，这些 handle 会一直
     // 堆到窗口关闭：上限 5000 一到就淘汰最旧的，而被淘汰的可能正是别的会话里仍在等待
     // 异步 host/reply 的 handle —— 插件拿到 unknown_handle，原因却和自己的行为无关。
-    const handle = this.#replies.register(event);
+    // 先按实际当前时间清扫旧 handle，再用入站时间固定本条消息的被动回复预算。
+    this.#replies.sweep();
+    const handle = this.#replies.register(event, receivedAt, candidates.map((plugin) => plugin.name));
 
     for (const plugin of candidates) {
       const request = await this.#deliver(plugin, event, handle);
@@ -158,7 +162,7 @@ export class Dispatcher {
         continue;
       }
 
-      const resolution = this.#replies.resolve(handle.handleId, request.message);
+      const resolution = this.#replies.resolve(handle.handleId, request.message, Date.now(), plugin.name);
       if (!resolution.ok) {
         this.#log(
           'warn',

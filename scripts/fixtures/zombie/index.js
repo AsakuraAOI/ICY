@@ -39,7 +39,7 @@ process.stdin.on('data', (chunk) => {
       write({
         jsonrpc: '2.0',
         method: 'plugin/ready',
-        params: { name: 'zombie', version: VERSION, protocolVersion: 2 },
+        params: { name: 'zombie', version: VERSION, protocolVersion: 3 },
       });
       // 之后什么都不回：ping 与 shutdown 都石沉大海。
     }
