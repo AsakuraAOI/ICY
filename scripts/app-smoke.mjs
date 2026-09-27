@@ -543,7 +543,15 @@ function probeModule(name, options = {}) {
     manifests.map((manifest) => manifest.name).join(', ') || '（空）',
   );
 
-  const catalog = new PluginCatalog(runtimeManifests);
+  // 生产 manifest 只装配业务模块；这里注入验证模块以测试消息管道的状态语义。
+  const catalog = new PluginCatalog(runtimeManifests.map((manifest) => ({
+    ...manifest,
+    config: { ...manifest.config, modules: [
+      '../../dist/modules/counter.js',
+      '../../dist/modules/pinger.js',
+      { path: '../../dist/modules/greeter.js', config: { prefix: 'count' } },
+    ] },
+  })));
   const logs = [];
   const supervisor = new Supervisor(catalog, {
     catalog,

@@ -1,6 +1,6 @@
 import { defineModule } from '../../app/runtime/module.js';
 import { Models } from './contracts.js';
-import { OpenAICompatibleModels, type OpenAICompatibleModelConfig } from './openai-compatible.js';
+import { HiAgentAdapterModels, type HiAgentModelConfig } from './hiagent-adapter.js';
 
 interface ModelsModuleConfig {
   readonly models?: unknown;
@@ -12,16 +12,16 @@ export const modelsModule = defineModule<ModelsModuleConfig>({
 
   setup(ctx) {
     const models = readModelConfigs(ctx.config.models);
-    ctx.provide(Models, new OpenAICompatibleModels(models));
+    ctx.provide(Models, new HiAgentAdapterModels(models, process.env, (message) => ctx.logger.warn(message)));
     if (models.length === 0) {
       ctx.logger.warn('没有配置模型；Models service 已注册，但 generate() 暂不可用');
     } else {
-      ctx.logger.info(`已配置 ${models.length} 个 OpenAI-compatible 模型别名`);
+      ctx.logger.info(`已配置 ${models.length} 个模型别名（含 HiAgent 专用适配）`);
     }
   },
 });
 
-function readModelConfigs(value: unknown): OpenAICompatibleModelConfig[] {
+function readModelConfigs(value: unknown): HiAgentModelConfig[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
     throw new Error('models 模块的 config.models 必须是数组');
@@ -40,11 +40,14 @@ function readModelConfigs(value: unknown): OpenAICompatibleModelConfig[] {
       (record.apiKeyEnv !== undefined && typeof record.apiKeyEnv !== 'string') ||
       (record.supportsTools !== undefined && typeof record.supportsTools !== 'boolean') ||
       (record.timeoutMs !== undefined && typeof record.timeoutMs !== 'number') ||
-      (record.outputTokenParameter !== undefined && typeof record.outputTokenParameter !== 'string')
+      (record.outputTokenParameter !== undefined && typeof record.outputTokenParameter !== 'string') ||
+      (record.provider !== undefined && record.provider !== 'openai' && record.provider !== 'hiagent') ||
+      (record.maxPayloadBytes !== undefined && typeof record.maxPayloadBytes !== 'number') ||
+      (record.maxTextChars !== undefined && typeof record.maxTextChars !== 'number')
     ) {
       throw new Error(`config.models[${index}] 缺少有效字段（alias/model/baseUrl/contextTokens/maxOutputTokens）`);
     }
-    return record as unknown as OpenAICompatibleModelConfig;
+    return record as unknown as HiAgentModelConfig;
   });
 }
 

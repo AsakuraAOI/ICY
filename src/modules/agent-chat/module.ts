@@ -28,7 +28,7 @@ export const agentChatModule = defineModule<AgentChatConfig>({
       if (scope !== 'group' && scope !== 'c2c') return next();
       if (message.reply === null) return next();
       const content = message.event.content?.trim() ?? '';
-      if (content === '' || content.startsWith('/')) return next();
+      if ((content === '' && !message.event.attachments?.length) || content.startsWith('/')) return next();
 
       const replyText = (text: string) => ({
         scope, body: { kind: 'text' as const, text },
@@ -37,6 +37,9 @@ export const agentChatModule = defineModule<AgentChatConfig>({
       if (actor === null) return replyText('无法确认发送者身份，本条请求未执行。');
       if (!policy.decide(actor, 'agent.use', { kind: 'session', sessionKey: actor.sessionKey }).allowed) {
         return replyText('当前会话没有使用 Agent 的权限。');
+      }
+      if (message.event.attachments?.length) {
+        return replyText('当前 HiAgent 模型只接收文字，暂时不能读取图片或文件内容。');
       }
       const eventKey = inboundEventKey(message.event, actor);
       if (eventKey === null) return replyText('消息缺少有效标识，本条请求未执行。');
@@ -52,7 +55,6 @@ export const agentChatModule = defineModule<AgentChatConfig>({
           case 'disabled': return replyText('Agent 尚未启用。');
           case 'stopping': return replyText('服务正在重启，请稍后再试。');
           case 'too_long': return replyText('消息太长，请缩短到 4000 字以内。');
-          case 'quota': return replyText('当前会话或机器人近 24 小时任务额度已用完。');
         }
       } catch (error) {
         ctx.logger.error(`Agent 任务登记失败：${error instanceof Error ? error.message : String(error)}`);

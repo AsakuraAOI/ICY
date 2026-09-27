@@ -10,9 +10,13 @@
  */
 
 import { spawn } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { loadManifest } from '../dist/host/manifest.js';
+import { defaultsFromManifest } from '../dist/host/bot-settings.js';
 import { startMockQq } from './e2e/mock-qq.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -44,6 +48,12 @@ async function waitFor(label, predicate, timeoutMs = 15000) {
 }
 
 async function main() {
+  // 生产 manifest 保留在线模型与 Agent 配置；e2e 只验证内核和 echo 插件。
+  const fixtureDir = mkdtempSync(join(tmpdir(), 'icy-e2e-'));
+  const settingsPath = join(fixtureDir, 'settings.json');
+  const manifest = await loadManifest(resolve(root, 'plugins/app-runtime'));
+  const base = defaultsFromManifest(manifest);
+  writeFileSync(settingsPath, JSON.stringify({ ...base, agent: { ...base.agent, enabled: false } }));
   const mock = await startMockQq({ heartbeatInterval: 1200 });
   const logs = [];
 
@@ -55,6 +65,7 @@ async function main() {
       QQ_APP_SECRET: 'mock-app-secret',
       QQ_API_BASE: mock.baseUrl,
       PLUGIN_DIR: resolve(root, 'plugins'),
+      ICY_BOT_SETTINGS: settingsPath,
       LOG_LEVEL: 'debug',
     },
     // 带 ipc：内核用 {type:'shutdown'} 消息走优雅关停，这是 Windows 上唯一
@@ -352,6 +363,7 @@ async function main() {
         QQ_APP_SECRET: 'mock-app-secret',
         QQ_API_BASE: fatalMock.baseUrl,
         PLUGIN_DIR: resolve(root, 'plugins'),
+        ICY_BOT_SETTINGS: settingsPath,
         LOG_LEVEL: 'debug',
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -388,6 +400,7 @@ async function main() {
         QQ_APP_SECRET: 'mock-app-secret',
         QQ_API_BASE: resumeMock.baseUrl,
         PLUGIN_DIR: resolve(root, 'plugins'),
+        ICY_BOT_SETTINGS: settingsPath,
         LOG_LEVEL: 'debug',
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -443,6 +456,7 @@ async function main() {
         QQ_APP_SECRET: 'mock-app-secret',
         QQ_API_BASE: gatewayFailMock.baseUrl,
         PLUGIN_DIR: resolve(root, 'plugins'),
+        ICY_BOT_SETTINGS: settingsPath,
         LOG_LEVEL: 'debug',
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -478,6 +492,9 @@ async function main() {
     if (fatalMock !== null) fatalMock.close();
     if (resumeMock !== null) resumeMock.close();
     if (gatewayFailMock !== null) gatewayFailMock.close();
+    if (resolve(fixtureDir).startsWith(resolve(tmpdir()) + sep)) {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
   }
 
   if (failures > 0) {

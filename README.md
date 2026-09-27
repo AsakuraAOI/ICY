@@ -45,6 +45,8 @@ npm start
 
 内置实用命令、持久记忆和关键词回复插件可在管理台「插件」页面配置，详见 [内置功能插件](docs/plugins-built-in.md)。
 
+Agent 可以按需生成并调用小型功能插件（JSON 输入/输出的单文件 JavaScript）。该能力默认关闭。使用支持 `--permission` 的 Node，先在私有环境配置中设置 `ICY_PLUGIN_WRITER_ENABLED=1`、绝对路径 `ICY_PLUGIN_DATA_DIR`（放在发布目录之外）和以逗号分隔的 `ICY_PLUGIN_ADMIN_OPENIDS`；再在 WebUI 启用 `plugin_list`、`plugin_create`、`plugin_run`。创建时传 `inputJson` 可在同一次工具调用中返回运行结果，正常闭环适配当前 3 次模型调用、2 次工具调用；若要自动修正失败，建议提高到至少 5 次模型调用、3 次工具调用。只有这些 OpenID 的私聊能创建或调用插件。实现与边界见 [Agent 自编写插件](docs/agent-self-plugin-design.md)。
+
 ## 自检
 
 ```bash

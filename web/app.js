@@ -22,7 +22,7 @@
   $('#sidebar-nav').innerHTML = nav.map(([group, entries]) => `<span class="nav-caption">${group}</span>${entries.map(([page, name, glyph, route]) => `<a href="#${route}" data-page="${page}" aria-label="${name}" title="${name}"><span data-icon="${glyph}">${icon(glyph)}</span><span>${name}</span>${page === 'plugins' ? '<small class="nav-count"></small>' : ''}</a>`).join('')}`).join('');
   const names = { dashboard:'仪表盘', config:'配置文件', models:'模型服务', personas:'人设管理', plugins:'插件管理', data:'数据与日志', settings:'设置' };
   const statusNames = { queued:'排队', running:'运行中', completed:'已完成', failed:'失败', cancelled:'已取消', interrupted:'已中断', sent:'已送达', pending:'待投递', unknown:'未知', none:'—' };
-  const tools = [['calculator_evaluate','计算器'], ['clock_now','当前时间'], ['knowledge_search','知识检索'], ['memory_search','用户记忆']];
+  const tools = [['calculator_evaluate','计算器'], ['clock_now','当前时间'], ['knowledge_search','知识检索'], ['memory_search','用户记忆'], ['plugin_list','已生成插件'], ['plugin_create','编写插件'], ['plugin_run','运行插件']];
   const pluginInfo = {
     utilities:{name:'实用命令',id:'utility',icon:'config',color:'blue',description:'掷骰子、随机选择和身份查看，让日常群聊更方便。',commands:'/roll · /choose · /whoami · /plugins'},
     memory:{name:'持久记忆',id:'memory',icon:'user',color:'purple',description:'保存用户主动提供的记忆，按群、私聊和用户隔离。',commands:'/remember · /memories · /forget'},

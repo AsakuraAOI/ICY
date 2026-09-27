@@ -5,7 +5,8 @@ import type { ActorContext } from './identity.js';
 export type PolicyAction =
   | 'agent.use'
   | 'runs.read' | 'runs.cancel' | 'sessions.reset'
-  | 'tools.clock_now' | 'tools.calculator_evaluate' | 'knowledge.read' | 'memory.read';
+  | 'tools.clock_now' | 'tools.calculator_evaluate' | 'knowledge.read' | 'memory.read'
+  | 'plugins.list' | 'plugins.create' | 'plugins.run';
 
 export interface PolicyResource {
   readonly kind: 'session' | 'tool' | 'knowledge';
@@ -29,6 +30,7 @@ interface PolicyConfig {
   readonly blockedUsers?: readonly string[];
   readonly allowC2c?: boolean;
   readonly enabledTools?: readonly string[];
+  readonly pluginAdmins?: readonly string[];
 }
 
 export class ConfiguredPolicy implements PolicyService {
@@ -36,6 +38,7 @@ export class ConfiguredPolicy implements PolicyService {
   readonly #blocked: ReadonlySet<string>;
   readonly #allowC2c: boolean;
   readonly #tools: ReadonlySet<string>;
+  readonly #pluginAdmins: ReadonlySet<string>;
 
   constructor(config: PolicyConfig = {}) {
     this.#groups = new Set(readStrings(config.allowedGroups ?? [], 'allowedGroups'));
@@ -47,6 +50,10 @@ export class ConfiguredPolicy implements PolicyService {
     this.#tools = new Set(readStrings(
       config.enabledTools ?? ['clock_now', 'calculator_evaluate', 'knowledge_search'],
       'enabledTools',
+    ));
+    this.#pluginAdmins = new Set(readStrings(
+      config.pluginAdmins ?? (process.env.ICY_PLUGIN_ADMIN_OPENIDS?.split(',').map((id) => id.trim()).filter(Boolean) ?? []),
+      'pluginAdmins',
     ));
   }
 
@@ -66,6 +73,14 @@ export class ConfiguredPolicy implements PolicyService {
       if (!this.#tools.has('memory_search')) return deny('disabled_tool');
       return resource.kind === 'session' && resource.sessionKey === actor.sessionKey
         ? { allowed: true, reason: 'allowed' } : deny('wrong_owner');
+    }
+    if (action === 'plugins.list' || action === 'plugins.create' || action === 'plugins.run') {
+      const toolName = action === 'plugins.list' ? 'plugin_list'
+        : action === 'plugins.create' ? 'plugin_create' : 'plugin_run';
+      if (!this.#tools.has(toolName)) return deny('disabled_tool');
+      if (actor.scope !== 'c2c') return deny('wrong_scope');
+      if (!this.#pluginAdmins.has(actor.actorId)) return deny('wrong_owner');
+      return resource.kind === 'tool' ? { allowed: true, reason: 'allowed' } : deny('wrong_scope');
     }
     const toolName = action === 'tools.clock_now' ? 'clock_now'
       : action === 'tools.calculator_evaluate' ? 'calculator_evaluate'

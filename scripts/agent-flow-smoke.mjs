@@ -213,15 +213,14 @@ try {
   assert.match((await dispatch(interruptedApp, '/status', 'after-interrupt')).body.text, /服务中断/);
   await interruptedApp.stop();
   mode = 'text';
-  const quotaApp = createApp({ maxRunsPerSession24h: 1 });
-  await quotaApp.start();
-  assert.equal(await dispatch(quotaApp, '限额测试一', 'quota-first', 'g1', 'member_openid', 'user-3'), null);
-  await waitFor(() => deliveries.length === 5, '首次额度内回复');
-  const callsBeforeQuota = calls.length;
-  const quotaReply = await dispatch(quotaApp, '限额测试二', 'quota-second', 'g1', 'member_openid', 'user-3');
-  assert.match(quotaReply.body.text, /额度已用完/);
-  assert.equal(calls.length, callsBeforeQuota);
-  await quotaApp.stop();
+  const noQuotaApp = createApp({ runTimeoutMs: 210_000 });
+  await noQuotaApp.start();
+  const deliveriesBefore = deliveries.length;
+  assert.equal(await dispatch(noQuotaApp, '连续任务一', 'no-quota-first', 'g1', 'member_openid', 'user-3'), null);
+  await waitFor(() => deliveries.length === deliveriesBefore + 1, '第一条回复');
+  assert.equal(await dispatch(noQuotaApp, '连续任务二', 'no-quota-second', 'g1', 'member_openid', 'user-3'), null);
+  await waitFor(() => deliveries.length === deliveriesBefore + 2, '第二条回复');
+  await noQuotaApp.stop();
   process.stdout.write('AGENT FLOW SMOKE OK\n');
 } finally {
   const safeRoot = resolve(tmpdir()) + sep;

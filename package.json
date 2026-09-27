@@ -24,14 +24,16 @@
     "smoke": "node scripts/smoke.mjs",
     "app-smoke": "node scripts/app-smoke.mjs",
     "agent-smoke": "node scripts/agent-smoke.mjs",
+    "hiagent-smoke": "node scripts/hiagent-smoke.mjs",
     "agent-flow-smoke": "node --experimental-sqlite scripts/agent-flow-smoke.mjs",
     "persona-smoke": "node --experimental-sqlite scripts/persona-smoke.mjs",
     "web-settings-smoke": "node --experimental-sqlite scripts/web-settings-smoke.mjs",
     "plugins-smoke": "node --experimental-sqlite scripts/plugins-smoke.mjs",
+    "plugin-writer-smoke": "node scripts/plugin-writer-smoke.mjs",
     "humanize-smoke": "node --experimental-sqlite scripts/humanize-smoke.mjs",
     "group-commands-smoke": "node --experimental-sqlite scripts/group-commands-smoke.mjs",
     "e2e": "node scripts/e2e.mjs",
-    "verify": "npm run typecheck && npm run build && npm run smoke && npm run app-smoke && npm run agent-smoke && npm run agent-flow-smoke && npm run persona-smoke && npm run web-settings-smoke && npm run plugins-smoke && npm run humanize-smoke && npm run group-commands-smoke && npm run e2e"
+    "verify": "npm run typecheck && npm run build && npm run smoke && npm run app-smoke && npm run agent-smoke && npm run hiagent-smoke && npm run agent-flow-smoke && npm run persona-smoke && npm run web-settings-smoke && npm run plugins-smoke && npm run plugin-writer-smoke && npm run humanize-smoke && npm run group-commands-smoke && npm run e2e"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",

@@ -103,8 +103,9 @@ export function parseBotSettings(value: unknown): BotSettings {
   if (new Set(models.map((m) => m.alias)).size !== models.length) throw new Error('模型别名不能重复');
   const modelAlias = string(agent.modelAlias, 'Agent 模型别名', 80, models.length === 0 && agent.enabled === false);
   if ((models.length > 0 || agent.enabled) && !models.some((m) => m.alias === modelAlias)) throw new Error('Agent 模型别名不存在');
-  const enabledTools = strings(policy.enabledTools, '启用工具', 4);
-  if (enabledTools.some((t) => !['clock_now', 'calculator_evaluate', 'knowledge_search', 'memory_search'].includes(t))) throw new Error('含有未知工具');
+  const enabledTools = strings(policy.enabledTools, '启用工具', 7);
+  if (enabledTools.some((t) => !['clock_now', 'calculator_evaluate', 'knowledge_search', 'memory_search',
+    'plugin_list', 'plugin_create', 'plugin_run'].includes(t))) throw new Error('含有未知工具');
   return {
     plugins: readExtensionConfig(root.plugins),
     policy: { allowedGroups: strings(policy.allowedGroups, '群白名单'), blockedUsers: strings(policy.blockedUsers, '封禁用户'), allowC2c: boolean(policy.allowC2c, '私聊开关'), groupCommandsWithoutMention: boolean(policy.groupCommandsWithoutMention ?? true, '群命令免 @ 开关'), enabledTools },

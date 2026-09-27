@@ -35,7 +35,7 @@ export interface ToolDefinition {
   readonly version: string;
   readonly description: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
-  readonly effect: 'read';
+  readonly effect: 'read' | 'write';
   readonly requiredAction: PolicyAction;
   resource(args: Readonly<Record<string, unknown>>, actor: ActorContext): PolicyResource;
   readonly timeoutMs: number;
@@ -67,8 +67,8 @@ export class ToolRegistry implements ToolExecutor {
     if (this.#tools.has(tool.name)) {
       throw new ToolFailure('invalid_arguments', `工具名重复：${tool.name}`);
     }
-    if (tool.effect !== 'read') {
-      throw new ToolFailure('invalid_arguments', `首版仅允许只读工具：${tool.name}`);
+    if (tool.effect !== 'read' && tool.effect !== 'write') {
+      throw new ToolFailure('invalid_arguments', `工具作用类型无效：${tool.name}`);
     }
     if (!Number.isSafeInteger(tool.timeoutMs) || tool.timeoutMs <= 0) {
       throw new ToolFailure('invalid_arguments', `工具 ${tool.name} 的 timeoutMs 无效`);

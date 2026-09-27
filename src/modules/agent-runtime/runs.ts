@@ -12,7 +12,7 @@ import { AgentStore, type StoredRun } from './store.js';
 
 export type SubmitResult =
   | { readonly accepted: true; readonly runId: string; readonly duplicate: boolean }
-  | { readonly accepted: false; readonly reason: 'forbidden' | 'busy' | 'expired' | 'stopping' | 'disabled' | 'too_long' | 'quota' };
+  | { readonly accepted: false; readonly reason: 'forbidden' | 'busy' | 'expired' | 'stopping' | 'disabled' | 'too_long' };
 
 export interface RunsService {
   readonly enabled: boolean;
@@ -40,8 +40,7 @@ interface RunsConfig {
   readonly maxQueue?: number;
   readonly maxModelCalls?: number;
   readonly maxToolCalls?: number;
-  readonly maxRunsPerSession24h?: number;
-  readonly maxRunsGlobal24h?: number;
+  readonly runTimeoutMs?: number;
 }
 
 interface Job {
@@ -92,16 +91,11 @@ class RunManager implements RunsService {
       return { accepted: false, reason: 'forbidden' };
     }
     if (Array.from(input.text).length > 4_000) return { accepted: false, reason: 'too_long' };
-    const deadline = Math.min(Date.now() + 120_000, input.reply.acceptBefore - 15_000);
+    const deadline = Math.min(Date.now() + this.#config.runTimeoutMs, input.reply.acceptBefore - 15_000);
     if (deadline <= Date.now() + 2_000) return { accepted: false, reason: 'expired' };
     // 已接单的重投递返回同一个 run；不再次消耗队列名额或模型额度。
     const existing = this.#store.byEventKey(input.eventKey);
     if (existing !== null) return { accepted: true, runId: existing.id, duplicate: true };
-    const since = Date.now() - 24 * 60 * 60 * 1_000;
-    if (this.#store.countSince(since, input.actor.sessionKey) >= this.#config.maxRunsPerSession24h ||
-      this.#store.countSince(since) >= this.#config.maxRunsGlobal24h) {
-      return { accepted: false, reason: 'quota' };
-    }
     if (this.#store.pendingCount(input.actor.sessionKey) >= 2 ||
       this.#queue.length >= this.#config.maxQueue) {
       return { accepted: false, reason: 'busy' };
@@ -224,7 +218,12 @@ class RunManager implements RunsService {
       const kind = error !== null && typeof error === 'object' && 'kind' in error
         ? String(error.kind) : 'unavailable';
       const userText = kind === 'deadline' || kind === 'timeout'
-        ? '任务已超时，请重试。' : '处理请求时发生错误，请稍后重试。';
+        ? '任务已超时，请重试。'
+        : kind === 'context_overflow'
+          ? '对话内容太长，请发送 /reset 清空历史后重试。'
+          : kind === 'rate_limited'
+            ? '模型当前繁忙，请稍后重试。'
+            : '处理请求时发生错误，请稍后重试。';
       this.#log(`run ${job.id} 失败 kind=${kind}`);
       if (this.#store.fail(job.id, kind, userText)) await this.#deliver(job, userText);
     }
@@ -302,8 +301,7 @@ export const runsModule = defineModule<RunsConfig>({
       maxQueue: readPositive(cfg.maxQueue, 'maxQueue', 16, 1_000),
       maxModelCalls: readPositive(cfg.maxModelCalls, 'maxModelCalls', 6, 20),
       maxToolCalls: readPositive(cfg.maxToolCalls, 'maxToolCalls', 8, 32),
-      maxRunsPerSession24h: readPositive(cfg.maxRunsPerSession24h, 'maxRunsPerSession24h', 20, 10_000),
-      maxRunsGlobal24h: readPositive(cfg.maxRunsGlobal24h, 'maxRunsGlobal24h', 200, 1_000_000),
+      runTimeoutMs: readPositive(cfg.runTimeoutMs, 'runTimeoutMs', 120_000, 240_000),
     };
     const store = new AgentStore(path);
     ctx.onDispose(() => store.close());

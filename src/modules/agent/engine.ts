@@ -90,7 +90,8 @@ export class BoundedAgentEngine implements AgentEngine {
         messages,
         toolSchemas,
         outputLimit: request.outputLimit,
-        deadline: Math.min(request.deadline, Date.now() + 30_000),
+        // 单次请求超时由模型适配器负责；这里保留 run 与 QQ 回复窗口的总截止时间。
+        deadline: request.deadline,
         signal: request.signal,
       });
       checkActive(request);

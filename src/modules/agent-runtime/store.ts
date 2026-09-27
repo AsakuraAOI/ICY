@@ -113,14 +113,6 @@ export class AgentStore {
     return Number(row.n);
   }
 
-  countSince(since: number, sessionKey?: string): number {
-    const row = sessionKey === undefined
-      ? this.#db.prepare('SELECT COUNT(*) AS n FROM runs WHERE created_at >= ?').get(since)
-      : this.#db.prepare('SELECT COUNT(*) AS n FROM runs WHERE created_at >= ? AND session_key = ?')
-        .get(since, sessionKey);
-    return Number((row as Row).n);
-  }
-
   markRunning(id: string): boolean {
     return Number(this.#db.prepare("UPDATE runs SET status = 'running', updated_at = ? WHERE id = ? AND status = 'queued'")
       .run(Date.now(), id).changes) > 0;
