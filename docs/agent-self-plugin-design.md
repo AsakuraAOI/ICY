@@ -1,6 +1,6 @@
 # ICY Agent 自编写插件：最小自动化方案
 
-状态：已于 2026-09-27 部署到 ICY 服务器并为一个明确的私聊 OpenID 启用；本地与服务器离线测试通过，尚未做真实 QQ 对话中的插件创建验收。
+状态：已于 2026-09-27 部署到 ICY 服务器并为一个明确的私聊 OpenID 启用；本地、服务器离线测试与真实 QQ 插件创建验收均已通过。
 
 ## 核心选择
 
@@ -77,3 +77,5 @@ export default async function run(input) {
 用线上相同的 OpenAI 入口做了不安装插件的只读兼容测试：Provider 返回含 `name/description/source/testsJson/inputJson` 的完整 `plugin_create` 工具调用（约 3.4 秒），随后接受模拟的 tool 结果并正常给出最终答复（约 3.5 秒）。这证明短插件的工具参数和结果可以往返；没有证明长源码生成或线上 QQ 实际安装已通过。
 
 本模块让 `plugin_create.inputJson` 在校验后执行一次并返回结果，使“先 list，再 create+run，最后回答”落在原 3 次模型调用、2 次工具调用预算内；线上调到 5/3 给一次失败修正留余量。Provider 的 [兼容性文档](../../hiagent-coding-provider/docs/compatibility.md)说明 `max_tokens` 不会转发到上游，较长生成受约 270 秒的 Provider 截止时间约束；ICY 的 90 秒请求超时现在先于 Provider 截止时间。上线后仍要观察真实 QQ 插件任务的耗时和被动回复窗口，不把服务 READY 当作最终验收。
+
+线上验收：授权用户在 QQ 私聊中要求创建并运行文本大写插件，机器人返回实际结果 `HI`；run 元数据为 `completed / sent`，持久目录中存在 `upper_text` 的源码与元数据，记录了 2 个通过的测试。此前的服务器发布版保留为可回滚版本，私有环境与设置文件也有发布前备份。
