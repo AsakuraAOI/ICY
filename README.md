@@ -31,12 +31,19 @@ npm start
 | `QQ_APP_ID` / `QQ_APP_SECRET` | 必填 | 开放平台凭证 |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `PLUGIN_DIR` | `./plugins` | 插件目录 |
+| `ICY_BOT_SETTINGS` | 未设置 | WebUI 管理的运行时设置 JSON 路径；启动时覆盖 app-runtime 对应模块配置 |
 | `QQ_API_BASE` | `https://api.bot.qq.com` | 基址覆盖，留给代理 / 沙箱 |
 | `QQ_SEND_PER_CONVERSATION` | `4` | 主动消息：单会话每窗口条数 |
 | `QQ_SEND_GLOBAL` | `20` | 主动消息：全局每窗口条数 |
 | `QQ_SEND_WINDOW_MS` | `60000` | 主动消息：窗口长度 |
 
 **intents 是连接级参数**：Identify 时一次性打包，运行中改不了，写错会让连接立刻被关（4014）。P3 之前必须先申请 `GROUP_AND_C2C_EVENT`（`1 << 25`）。启动时会把需要申请的 intent 打进日志。
+
+## WebUI
+
+生产管理台：<https://101.34.239.66:5099/>。可以查看运行状态，并配置群权限、Agent、现有模型连接与人设；保存后机器人自动重启加载。设置边界、部署结构和验证方法见 [WebUI 配置](docs/webui.md)。
+
+内置实用命令、持久记忆和关键词回复插件可在管理台「插件」页面配置，详见 [内置功能插件](docs/plugins-built-in.md)。
 
 ## 自检
 
@@ -108,3 +115,5 @@ docs/         plugin.md —— 底层插件契约；sdk.md —— Node.js / TS S
 ## 设计文档
 
 [`DESIGN.md`](DESIGN.md) 是设计依据：不变式、协议事实备忘、失效模式与每处「为什么这么选」。改动之前先看它。
+
+Agent 的配置式人设见 [`docs/persona.md`](docs/persona.md)。

@@ -26,6 +26,7 @@ import { getApiBase, setApiBase } from './core/routes.js';
 import { TokenManager } from './core/token.js';
 import { BuiltinWsTransport, builtinWebSocketCtor } from './core/transport.js';
 import { aggregateIntents, intentsNeedingApproval } from './host/manifest.js';
+import { applyBotSettings, readBotSettings } from './host/bot-settings.js';
 import { discoverPlugins, PluginCatalog } from './host/registry.js';
 import { Supervisor } from './host/supervisor.js';
 
@@ -88,6 +89,11 @@ async function main(): Promise<void> {
   }
 
   const manifests = await discoverPlugins(config.pluginDir);
+  const settingsPath = process.env.ICY_BOT_SETTINGS;
+  if (settingsPath) {
+    const index = manifests.findIndex((item) => item.name === 'app-runtime');
+    if (index !== -1) manifests[index] = applyBotSettings(manifests[index]!, await readBotSettings(settingsPath, manifests[index]!));
+  }
   if (manifests.length === 0) {
     throw new FatalError(`插件目录里没有发现任何插件：${resolve(config.pluginDir)}`);
   }

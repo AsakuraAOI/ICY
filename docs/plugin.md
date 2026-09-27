@@ -39,6 +39,8 @@ plugins/<name>/
 
 `intents` 是连接级参数：内核在 Identify 时一次性打包，运行中改不了。传了无权限的 intent 会让连接在 Identify 后立刻被关闭（关闭码 4014）。**写错的 manifest 会让内核直接启动失败，不会静默跳过你的插件** —— 一个错误的 intent 影响的是整条连接，跳过只会让问题更难定位。
 
+`GROUP_MESSAGE_CREATE` 是群消息全量事件，订阅它后插件会收到未 @机器人的消息。只处理 @消息的插件必须自行过滤。`app-runtime` 用私有配置 `config.groupMentionId` 匹配消息中的 `<@标识>`，转交前去掉该标记。开启 `config.groupCommandsWithoutMention` 后，未 @ 的消息通过 `DirectCommands` 服务识别：内置命令和已启用插件注册的命令交给命令路由，仍执行原有权限检查。启用关键词回复模块后，`AutoReplies` 服务识别命中规则及适用场景、指定群的消息，使关键词独立于命令开关免 @ 触发；权限与冷却仍在关键词模块执行。两个服务均与执行模块共用匹配逻辑，识别本身不调用 LLM。未命中消息和机器人自身消息忽略，`GROUP_AT_MESSAGE_CREATE` 和私聊照常处理。
+
 ### 1.1 运行方式：多语言与 TypeScript
 
 内核不关心插件用什么语言写。它只做一件事：`spawn(command, [...args, entry])`。缺省 `command` 是内核自己的 Node（`process.execPath`），所以纯 JS 插件零配置。要换运行时就在 manifest 里写 `runtime`：

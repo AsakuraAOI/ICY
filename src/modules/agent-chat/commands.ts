@@ -1,19 +1,31 @@
 import { Messages } from '../../app/runtime/contracts.js';
 import { defineModule } from '../../app/runtime/module.js';
-import { actorFromEvent } from '../agent/identity.js';
+import { actorFromEvent, inboundEventKey } from '../agent/identity.js';
 import { Policy } from '../agent/policy.js';
 import { ToolFailure, Tools } from '../agent/tools.js';
 import { Runs } from '../agent-runtime/runs.js';
 import type { StoredRun } from '../agent-runtime/store.js';
+import { Personas } from '../persona/module.js';
+import { CommandInputError, PluginCommands } from '../commands/module.js';
+import { BUILTIN_COMMANDS, DirectCommands, parseDirectCommand } from '../commands/recognition.js';
 
 /** 确定性命令入口。返回回复即消费消息；任何斜杠输入都不会进入 LLM。 */
 export const commandRouterModule = defineModule({
   name: 'command-router', version: '0.1.0',
   requires: ['core', 'policy', 'runs', 'tools'],
+  optional: ['persona', 'commands', 'utility', 'memory'],
   setup(ctx) {
     const policy = ctx.services.require(Policy);
     const runs = ctx.services.require(Runs);
     const tools = ctx.services.require(Tools);
+    const personas = ctx.services.get(Personas);
+    const extensions = ctx.services.get(PluginCommands);
+    ctx.provide(DirectCommands, {
+      matches(content) {
+        const parsed = parseDirectCommand(content);
+        return parsed !== null && ((BUILTIN_COMMANDS as readonly string[]).includes(parsed.name) || extensions?.get(parsed.name) !== undefined);
+      },
+    });
     ctx.services.require(Messages).use(async (message, next) => {
       const scope = message.event.kind;
       if (scope !== 'group' && scope !== 'c2c') return next();
@@ -22,10 +34,10 @@ export const commandRouterModule = defineModule({
       const reply = (text: string) => ({ scope, body: { kind: 'text' as const, text } });
       const actor = actorFromEvent(message.event, message.botId);
       if (actor === null) return reply('无法确认发送者身份，命令未执行。');
-      const match = /^\/([a-z][a-z0-9_-]*)(?:\s+(.+))?$/i.exec(content);
-      if (match === null) return reply('命令格式无效；发送 /help 查看可用命令。');
-      const command = match[1]?.toLowerCase();
-      const argument = match[2];
+      const parsed = parseDirectCommand(content);
+      if (parsed === null) return reply('命令格式无效；发送 /help 查看可用命令。');
+      const command = parsed.name;
+      const argument = parsed.argument;
       if (command === 'help' && argument === undefined) {
         const commands = ['/help'];
         const resource = { kind: 'session' as const, sessionKey: actor.sessionKey };
@@ -34,7 +46,34 @@ export const commandRouterModule = defineModule({
         if (policy.decide(actor, 'sessions.reset', resource).allowed) commands.push('/reset');
         if (policy.decide(actor, 'tools.calculator_evaluate', { kind: 'tool' }).allowed) commands.push('/calc <表达式>');
         if (policy.decide(actor, 'tools.clock_now', { kind: 'tool' }).allowed) commands.push('/time [时区]');
+        if (personas !== undefined && policy.decide(actor, 'agent.use', resource).allowed) {
+          commands.push('/persona');
+        }
+        if (extensions !== undefined && policy.decide(actor, 'agent.use', resource).allowed) {
+          commands.push(...extensions.list().map((item) => item.usage));
+        }
         return reply(`可用命令：${commands.join('、')}。普通问题直接发送消息。`);
+      }
+      const extension = command === undefined ? undefined : extensions?.get(command);
+      if (extension !== undefined) {
+        if (!policy.decide(actor, 'agent.use', { kind: 'session', sessionKey: actor.sessionKey }).allowed) return reply('没有执行此命令的权限。');
+        const eventKey = inboundEventKey(message.event, actor);
+        if (eventKey === null) return reply('消息缺少有效标识，命令未执行。');
+        try { return reply(await extension.execute(argument, actor, eventKey)); }
+        catch (error) {
+          if (error instanceof CommandInputError) return reply(error.message);
+          ctx.logger.error(`插件命令 /${command} 执行失败`);
+          return reply('插件命令执行失败，请稍后再试。');
+        }
+      }
+      if (command === 'persona') {
+        if (argument !== undefined) return reply('用法：/persona（人设由配置文件指定）');
+        if (!policy.decide(actor, 'agent.use', { kind: 'session', sessionKey: actor.sessionKey }).allowed) {
+          return reply('没有查看当前人设的权限。');
+        }
+        if (personas === undefined) return reply('当前没有配置人设插件。');
+        const persona = personas.resolve(actor);
+        return reply(`当前人设：${persona.name}${persona.description === '' ? '' : `（${persona.description}）`}。`);
       }
       if (command === 'calc' || command === 'time') {
         const action = command === 'calc' ? 'tools.calculator_evaluate' : 'tools.clock_now';

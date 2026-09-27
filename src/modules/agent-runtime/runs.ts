@@ -6,6 +6,8 @@ import { Agents, type AgentEngine } from '../agent/engine.js';
 import { Policy, type PolicyService } from '../agent/policy.js';
 import type { ActorContext } from '../agent/identity.js';
 import { Models } from '../llm/contracts.js';
+import { Personas, type PersonaService } from '../persona/module.js';
+import { Humanize, type HumanizedOutput } from '../humanize/contracts.js';
 import { AgentStore, type StoredRun } from './store.js';
 
 export type SubmitResult =
@@ -50,6 +52,7 @@ interface Job {
   readonly host: PluginHost;
   readonly deadline: number;
   readonly generation: number;
+  readonly personaPrompt: string;
 }
 
 class RunManager implements RunsService {
@@ -58,6 +61,8 @@ class RunManager implements RunsService {
   readonly #store: AgentStore;
   readonly #engine: AgentEngine;
   readonly #policy: PolicyService;
+  readonly #personas: PersonaService | undefined;
+  readonly #output: HumanizedOutput | undefined;
   readonly #config: Required<Omit<RunsConfig, 'dbPath' | 'enabled'>>;
   readonly #log: (message: string) => void;
   readonly #queue: Job[] = [];
@@ -65,11 +70,15 @@ class RunManager implements RunsService {
   #stopping = false;
 
   constructor(store: AgentStore, durable: boolean, engine: AgentEngine, policy: PolicyService,
+    personas: PersonaService | undefined,
+    output: HumanizedOutput | undefined,
     config: Required<Omit<RunsConfig, 'dbPath' | 'enabled'>>, log: (message: string) => void) {
     this.#store = store;
     this.durable = durable;
     this.#engine = engine;
     this.#policy = policy;
+    this.#personas = personas;
+    this.#output = output;
     this.#config = config;
     this.#log = log;
   }
@@ -97,6 +106,7 @@ class RunManager implements RunsService {
       this.#queue.length >= this.#config.maxQueue) {
       return { accepted: false, reason: 'busy' };
     }
+    const personaPrompt = this.#personas?.resolve(input.actor).systemPrompt ?? '';
     const created = this.#store.create({
       id: randomUUID(), eventKey: input.eventKey,
       sessionKey: input.actor.sessionKey, text: input.text,
@@ -105,6 +115,7 @@ class RunManager implements RunsService {
     this.#queue.push({
       id: created.run.id, actor: input.actor, text: input.text,
       reply: input.reply, host: input.host, deadline, generation: created.run.generation,
+      personaPrompt,
     });
     queueMicrotask(() => this.#pump());
     return { accepted: true, runId: created.run.id, duplicate: false };
@@ -192,9 +203,10 @@ class RunManager implements RunsService {
       return;
     }
     const history = this.#store.history(job.actor.sessionKey, job.generation);
+    const systemPrompt = [this.#config.systemPrompt, job.personaPrompt].filter(Boolean).join('\n\n');
     const messages = [
-      ...(this.#config.systemPrompt === '' ? [] as const
-        : [{ role: 'system' as const, content: this.#config.systemPrompt }]),
+      ...(systemPrompt === '' ? [] as const
+        : [{ role: 'system' as const, content: systemPrompt }]),
       ...history,
       { role: 'user' as const, content: job.text },
     ];
@@ -225,7 +237,7 @@ class RunManager implements RunsService {
       return;
     }
     try {
-      const result = await job.host.reply(job.reply, { kind: 'text', text });
+      const result = await job.host.reply(job.reply, { kind: 'text', text: this.#output?.format(text, 'agent') ?? text });
       this.#store.setDelivery(job.id, result.ok ? 'sent' : 'failed');
       if (!result.ok) this.#log(`run ${job.id} 回复失败 reason=${result.reason}`);
     } catch (error) {
@@ -257,6 +269,7 @@ function describe(error: unknown): string {
 export const runsModule = defineModule<RunsConfig>({
   name: 'runs', version: '0.1.0',
   requires: ['agent-engine', 'models', 'policy'],
+  optional: ['persona', 'humanize'],
   setup(ctx) {
     const cfg = ctx.config;
     if (cfg.enabled !== undefined && typeof cfg.enabled !== 'boolean') {
@@ -295,7 +308,8 @@ export const runsModule = defineModule<RunsConfig>({
     const store = new AgentStore(path);
     ctx.onDispose(() => store.close());
     ctx.provide(Runs, new RunManager(
-      store, path !== ':memory:', ctx.services.require(Agents), ctx.services.require(Policy), limits,
+      store, path !== ':memory:', ctx.services.require(Agents), ctx.services.require(Policy),
+      ctx.services.get(Personas), ctx.services.get(Humanize), limits,
       (message) => ctx.logger.warn(message),
     ));
     if (path === ':memory:') ctx.logger.warn('Runs 使用内存 SQLite；重启后会话与任务不会保留');

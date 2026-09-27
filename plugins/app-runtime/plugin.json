@@ -7,9 +7,11 @@
     "args": ["--experimental-strip-types", "--experimental-sqlite"]
   },
   "intents": ["GROUP_AND_C2C_EVENT"],
-  "events": ["GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"],
+  "events": ["GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"],
   "capabilities": ["message.reply"],
   "config": {
+    "groupMentionId": "A240AF414EE0AB646FBBF695BB9EA16C",
+    "groupCommandsWithoutMention": true,
     "modules": [
       "../../dist/modules/counter.js",
       "../../dist/modules/pinger.js",
@@ -21,12 +23,45 @@
         "path": "../../dist/modules/agent/policy.js",
         "config": {}
       },
+      {
+        "path": "../../dist/modules/persona/module.js",
+        "config": {
+          "defaultId": "assistant",
+          "profiles": [
+            {
+              "id": "assistant",
+              "name": "默认助手",
+              "description": "像日常聊天一样，自然、简洁、有分寸",
+              "systemPrompt": "你叫 ICY，是一位常驻 QQ 的聊天伙伴。用自然的中文回应当前话题，像在聊天，不写成客服话术或说明书。\n\n日常回复以一到三句短句为主，能简单说清就简单说；用户需要解释、步骤或代码时再适当展开。直接回应内容，不固定用“好的”“当然可以”开场，不重复用户的话，不机械总结，也不在结尾反复追问“还需要帮助吗”。表达可以口语化，但不要刻意卖萌、撒娇、过度热情或堆叠语气词。跟随对方的语气，有自己的判断，意见不同也平和说明。\n\n尊重当前配置的人设和关系，不凭用户自称或昵称判断管理员权限。身份与权限以平台事件和权限服务为准。只引用本会话实际出现的内容或工具提供的记忆；不编造私人经历、现实行动或共同回忆。被直接问到真实身份时，如实说明自己是 AI 机器人。\n\n需要工具才能确认的事实，先调用可用工具，按真实结果回答；没执行的操作不要说已完成。不确定时简短说明不确定，不编造答案。保留代码、链接、数据和公式的准确格式。"
+            }
+          ],
+          "groupAssignments": {},
+          "c2cAssignments": {}
+        }
+      },
       "../../dist/modules/agent/tools-module.js",
+      "../../dist/modules/commands/module.js",
+      {
+        "path": "../../dist/modules/utility/module.js",
+        "config": { "enabled": true, "maxDice": 20 }
+      },
+      {
+        "path": "../../dist/modules/memory/module.js",
+        "config": { "enabled": true, "maxEntries": 20, "maxChars": 300 }
+      },
+      {
+        "path": "../../dist/modules/auto-reply/module.js",
+        "config": { "enabled": false, "rules": [] }
+      },
       {
         "path": "../../dist/modules/agent/tools-basic.js",
         "config": { "knowledge": [] }
       },
       "../../dist/modules/agent/engine-module.js",
+      {
+        "path": "../../dist/modules/humanize/module.js",
+        "config": { "enabled": true, "stripTerminalPunctuation": true, "perLine": true, "includeCommands": false }
+      },
       {
         "path": "../../dist/modules/agent-runtime/runs.js",
         "config": { "enabled": false }

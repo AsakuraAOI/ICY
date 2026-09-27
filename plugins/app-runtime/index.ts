@@ -18,8 +18,11 @@ import { createPlugin } from 'icy-qqbot/sdk';
 import type { PluginHost } from 'icy-qqbot/sdk';
 import { Application, createCoreModule } from 'icy-qqbot/app';
 import type { Logger } from 'icy-qqbot/app';
+import { DirectCommands } from '../../dist/modules/commands/recognition.js';
+import { selectInboundMessage } from '../../dist/modules/commands/trigger.js';
+import { AutoReplies } from '../../dist/modules/auto-reply/recognition.js';
 
-type RuntimeConfig = { modules?: unknown };
+type RuntimeConfig = { modules?: unknown; groupMentionId?: unknown; groupCommandsWithoutMention?: unknown };
 
 interface ModuleSpec {
   path: string;
@@ -65,6 +68,8 @@ function readModuleSpecs(config: RuntimeConfig): ModuleSpec[] {
 
 let application: Application | null = null;
 let stopping = false;
+let groupMentionId: string | null = null;
+let groupCommandsWithoutMention = false;
 const activeDispatches = new Set<{
   controller: AbortController;
   promise: ReturnType<Application['dispatch']>;
@@ -76,6 +81,16 @@ createPlugin<RuntimeConfig>({
 
   async onInit({ host, config }) {
     stopping = false;
+    const mentionId = config.groupMentionId;
+    if (mentionId !== undefined &&
+      (typeof mentionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(mentionId))) {
+      throw new Error('app-runtime 的 config.groupMentionId 必须是群消息中的机器人 @ 标识');
+    }
+    groupMentionId = mentionId === undefined ? null : mentionId as string;
+    if (config.groupCommandsWithoutMention !== undefined && typeof config.groupCommandsWithoutMention !== 'boolean') {
+      throw new Error('app-runtime 的 config.groupCommandsWithoutMention 必须是布尔值');
+    }
+    groupCommandsWithoutMention = config.groupCommandsWithoutMention === true;
     const app = new Application({ logger: hostLogger(host) });
 
     // Core Module 由 Runtime 装配：它提供 EventBus 与 MessagePipeline。
@@ -97,8 +112,13 @@ createPlugin<RuntimeConfig>({
     const app = application;
     if (app === null || stopping) return null;
 
+    const dispatchEvent = selectInboundMessage(event, {
+      mentionId: groupMentionId, commandsWithoutMention: groupCommandsWithoutMention,
+    }, app.services.get(DirectCommands), app.services.get(AutoReplies));
+    if (dispatchEvent === null) return null;
+
     const controller = new AbortController();
-    const promise = app.dispatch({ event, botId: bot.id, reply, host, signal: controller.signal });
+    const promise = app.dispatch({ event: dispatchEvent, botId: bot.id, reply, host, signal: controller.signal });
     const dispatch = { controller, promise };
     activeDispatches.add(dispatch);
     try {

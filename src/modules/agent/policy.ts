@@ -5,7 +5,7 @@ import type { ActorContext } from './identity.js';
 export type PolicyAction =
   | 'agent.use'
   | 'runs.read' | 'runs.cancel' | 'sessions.reset'
-  | 'tools.clock_now' | 'tools.calculator_evaluate' | 'knowledge.read';
+  | 'tools.clock_now' | 'tools.calculator_evaluate' | 'knowledge.read' | 'memory.read';
 
 export interface PolicyResource {
   readonly kind: 'session' | 'tool' | 'knowledge';
@@ -59,6 +59,11 @@ export class ConfiguredPolicy implements PolicyService {
 
     if (action === 'agent.use') return { allowed: true, reason: 'allowed' };
     if (action === 'runs.read' || action === 'runs.cancel' || action === 'sessions.reset') {
+      return resource.kind === 'session' && resource.sessionKey === actor.sessionKey
+        ? { allowed: true, reason: 'allowed' } : deny('wrong_owner');
+    }
+    if (action === 'memory.read') {
+      if (!this.#tools.has('memory_search')) return deny('disabled_tool');
       return resource.kind === 'session' && resource.sessionKey === actor.sessionKey
         ? { allowed: true, reason: 'allowed' } : deny('wrong_owner');
     }
